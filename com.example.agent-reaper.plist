@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Reverse-DNS label. install.sh replaces {{LABEL}} with your chosen ID. -->
+    <key>Label</key>
+    <string>{{LABEL}}</string>
+
+    <!-- install.sh substitutes {{SCRIPT_PATH}} with the absolute install path. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>{{SCRIPT_PATH}}</string>
+    </array>
+
+    <!-- Run every 30 minutes (1800 seconds). -->
+    <key>StartInterval</key>
+    <integer>1800</integer>
+
+    <!-- Also run once on login / launchctl load. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Redirect stdout/stderr for debugging. install.sh rewrites these. -->
+    <key>StandardOutPath</key>
+    <string>{{LOG_DIR}}/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{LOG_DIR}}/stderr.log</string>
+
+    <!-- Play nice: low priority, background QoS. -->
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>LowPriorityIO</key>
+    <true/>
+    <key>Nice</key>
+    <integer>10</integer>
+</dict>
+</plist>
