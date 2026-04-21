@@ -27,11 +27,15 @@ ALWAYS_KILL=(
 # whose wrapper already closed become orphans. Those are the zombies.
 # =============================================================================
 ORPHAN_ONLY=(
-    "claude --output-format stream-json"   # Claude Code CLI
-    "cursor-agent.*stream"                 # Cursor Agent
-    "codex.*--output-format"               # OpenAI Codex CLI
-    "aider.*--stream"                      # Aider
-    # "gemini --stream"                    # add your own
+    "claude --output-format stream-json"            # Claude Code CLI
+    "cursor-agent.*stream"                          # Cursor Agent
+    "codex.*--output-format"                        # OpenAI Codex CLI
+    "aider.*--stream"                               # Aider
+    # MCP servers. They're almost always children of an AI IDE, so they
+    # become orphans the moment the IDE dies.
+    "node.*mcp-server-"                             # third-party MCP servers
+    "node.*@modelcontextprotocol/server-"           # official MCP servers
+    # "gemini --stream"                             # add your own
 )
 
 # =============================================================================
@@ -43,6 +47,7 @@ ORPHAN_ONLY=(
 OLD_PROCESS=(
     "ms-playwright/chromium"
     "puppeteer.*chromium"
+    "chrome-headless-shell"                         # Playwright/Puppeteer
     # "selenium.*chromedriver"
 )
 OLD_THRESHOLD_HOURS=2
