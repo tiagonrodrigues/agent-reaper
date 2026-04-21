@@ -6,7 +6,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)]()
 [![shellcheck](https://github.com/tiagonrodrigues/agent-reaper/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/tiagonrodrigues/agent-reaper/actions/workflows/shellcheck.yml)
 
-A tiny macOS LaunchAgent that sweeps away the orphaned `claude`, `cursor-agent`, `codex`, `aider`, and `playwright` processes that AI-agent wrappers forget to clean up. Runs every 30 minutes, never touches an active session.
+A tiny macOS LaunchAgent + CLI that sweeps away the orphaned `claude`, `cursor-agent`, `codex`, `aider`, and `playwright` processes that AI-agent wrappers forget to clean up. Runs every 30 minutes, never touches an active session.
 
 ---
 
@@ -26,7 +26,7 @@ Agent wrappers spawn child processes and don't always reap them when you close a
 
 ## The fix
 
-A shell script + a macOS LaunchAgent. It runs every 30 minutes with three tiers of aggression:
+A shell script + LaunchAgent + tiny CLI. Runs every 30 minutes with three tiers of aggression:
 
 | Tier | When to kill | Example targets |
 |---|---|---|
@@ -42,7 +42,7 @@ The `ORPHAN_ONLY` rule is the key. **Active sessions always have their IDE/termi
 curl -fsSL https://raw.githubusercontent.com/tiagonrodrigues/agent-reaper/main/install.sh | bash
 ```
 
-Or clone and run locally:
+Or clone and install locally:
 
 ```bash
 git clone https://github.com/tiagonrodrigues/agent-reaper.git
@@ -50,35 +50,59 @@ cd agent-reaper
 ./install.sh
 ```
 
-That's it. The LaunchAgent is loaded, first sweep runs immediately, next in 30 min.
+That's it. `reap` goes to `~/.local/bin/`, LaunchAgent gets loaded, first sweep runs immediately.
 
-## Verify
-
-```bash
-# Is it scheduled?
-launchctl list | grep agent-reaper
-
-# What did it kill?
-tail ~/.local/share/agent-reaper/reap.log
-
-# Run a sweep on demand
-~/.local/bin/agent-reaper.sh
-```
-
-Log output looks like:
+## The `reap` CLI
 
 ```
-[2026-04-19 21:04:15] Killed 4 process(es) — always-kill: opencode-ai/bin/.opencode
-[2026-04-19 21:04:15] Killed 28 process(es) — orphan (PPID=1): claude --output-format stream-json
-[2026-04-19 21:04:15] Killed 4 process(es) — stale (>2h): ms-playwright/chromium
-[2026-04-19 21:04:15] === Reaped 36 process(es) ===
+$ reap
+reap v0.2.0
+
+● scheduled    every 30 minutes via launchd
+  config: 0 always-kill · 4 orphan-only · 2 stale (>2h)
+
+recent activity
+  [2026-04-21 11:29:49] Clean run — no zombies found
+  [2026-04-21 11:59:50] Killed 3 (orphan (PPID=1): claude --output-format stream-json)
+  ...
+
+commands: reap preview · reap run · reap logs · reap config
+```
+
+| Command | What it does |
+|---|---|
+| `reap` | Status — schedule, config summary, recent activity |
+| `reap preview` | **Dry-run.** Show exactly what would be killed (PIDs, age, command) — kills nothing |
+| `reap run` | Kill zombies now (also invoked by the LaunchAgent every 30 min) |
+| `reap logs [-f]` | Show recent log entries (`-f` to follow) |
+| `reap config` | Open `~/.config/agent-reaper/config.sh` in `$EDITOR` |
+| `reap install` | (Re)install the LaunchAgent |
+| `reap uninstall` | Remove it (add `--purge` to also delete config + logs) |
+
+## Preview before you reap
+
+```
+$ reap preview
+reap preview (dry-run — nothing will be killed)
+
+would kill 3 process(es) — orphan (PPID=1): claude --output-format stream-json
+    PID 14086   06:51         claude --output-format stream-json --verbose ...
+    PID 79739   02:14         claude --output-format stream-json --verbose ...
+    PID 67833   10:20         claude --output-format stream-json --verbose ...
+
+would kill 1 process(es) — stale (>2h): ms-playwright/chromium
+    PID 16987   1-22:15:32    chrome-headless-shell --disable-field-trial-config ...
+
+would reap 4 process(es)  (run 'reap run' to do it)
 ```
 
 ## Customize
 
-Edit `~/.config/agent-reaper/config.sh` (seeded on first install from [`config.example.sh`](./config.example.sh)).
+```bash
+reap config
+```
 
-Add your own patterns, move tools between tiers, adjust the age threshold for stale browsers. Example:
+…opens `~/.config/agent-reaper/config.sh` in your `$EDITOR`. Move patterns between tiers, add your own, adjust the stale threshold:
 
 ```bash
 ALWAYS_KILL=(
@@ -100,30 +124,30 @@ OLD_PROCESS=(
 OLD_THRESHOLD_HOURS=2
 ```
 
+## Safety
+
+Hardcoded defenses, not configurable — they always apply:
+
+- **Never runs as root.** Exits immediately if invoked with `EUID=0`.
+- **UID-scoped.** Only processes owned by the invoking user are considered.
+- **Hard blocklist.** Even if a user pattern matched them, reap refuses to kill `launchd`, `kernel_task`, `WindowServer`, `loginwindow`, `Finder`, `Dock`, `SystemUIServer`, `sshd`, login shells, anything under `/System/Library`, or reap itself.
+- **Pattern sanity.** Rejects empty patterns, `*`, `.*`, or patterns shorter than 4 characters.
+- **Max-kill cap.** If a single rule matches > 50 processes, the rule is aborted and logged. Something is almost certainly wrong — review manually.
+- **Dry-run first.** `reap preview` shows you everything before you commit to any kills.
+
 ## How it works
 
-**Heuristic explained.** The reaper uses three matching strategies:
+**The PPID=1 trick.** On Unix, when a process's parent dies, the kernel re-parents the child to `launchd` (PID 1). A `claude` CLI whose T3 Code session died will have `PPID=1`. An active one has the IDE's helper process as parent. Perfect discriminator — zero false positives in practice.
 
-1. **PPID=1 check (`ORPHAN_ONLY`)** — On Unix, when a process's parent dies, the kernel re-parents it to `launchd` (PID 1). An `claude` CLI whose T3 Code session died will have `PPID=1`. An active one has the IDE's helper process as parent. Perfect discriminator.
+**LaunchAgent, not cron.** macOS deprecated cron. `launchd` respects laptop sleep/wake cycles, handles missed runs on resume, and doesn't need a login shell.
 
-2. **Elapsed time (`OLD_PROCESS`)** — For tools that should be short-lived. Playwright spawns headless browsers for tests; when a test crashes they sometimes leak. A Chromium running for > 2 hours is almost certainly dead weight.
-
-3. **Always kill (`ALWAYS_KILL`)** — Pragmatic escape hatch. If some transitive dependency keeps spawning a daemon you don't want, put it here.
-
-**Why a LaunchAgent instead of cron?** macOS deprecated cron. `launchd` respects laptop sleep/wake cycles, handles missed runs on resume, and doesn't need a login shell.
-
-**Performance.** The sweep runs with `Nice=10` and `LowPriorityIO=true`. Takes < 100ms on an M-series Mac. You'll never notice it running.
+**Performance.** Runs with `Nice=10` and `LowPriorityIO=true`. Takes < 100ms on an M-series Mac.
 
 ## Uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tiagonrodrigues/agent-reaper/main/uninstall.sh | bash
-
-# Or if you cloned:
-./uninstall.sh
-
-# To also remove config and logs:
-./uninstall.sh --purge
+reap uninstall              # keep config + logs
+reap uninstall --purge      # remove everything
 ```
 
 ## FAQ
@@ -131,24 +155,20 @@ curl -fsSL https://raw.githubusercontent.com/tiagonrodrigues/agent-reaper/main/u
 **Will this kill my active Claude Code / Cursor session?**
 No. Active sessions have their IDE as parent (PPID ≠ 1), so they never match the `ORPHAN_ONLY` rule. The only way an agent ends up in `ORPHAN_ONLY`'s crosshairs is if its parent already died — at which point it's genuinely orphaned.
 
-**What if I actually use opencode?**
-Remove it from `ALWAYS_KILL` in your config. Or move the pattern into `ORPHAN_ONLY` to use the safer rule.
+**What if I actually use opencode (or anything else in `ALWAYS_KILL`)?**
+Remove it from `ALWAYS_KILL` in your config, or move the pattern into `ORPHAN_ONLY` to use the safer rule.
 
 **Does this work on Linux?**
 Not yet. The script is POSIX-compatible but the scheduler (`launchd`) is macOS-only. A `systemd --user` timer equivalent is on the roadmap — PRs welcome.
 
-**Does this work on Apple Silicon?**
-Yes. Tested on M1/M2/M3 running macOS 14+.
-
 **Is this safe? I'm paranoid.**
-Run `kill-zombies.sh` once manually and inspect the log. Edit `ALWAYS_KILL` to be empty and only use `ORPHAN_ONLY` patterns until you're comfortable. The worst case is an orphaned agent getting killed 30 minutes earlier than it otherwise would — which is the point.
+Run `reap preview` once and inspect what it would do. The worst case is an orphaned agent getting killed 30 minutes earlier than it otherwise would — which is the point.
 
 ## Contributing
 
 PRs and issues welcome. Good first targets:
 - Linux support via `systemd --user`
 - Patterns for more agent CLIs (Gemini, Replit Agent, etc.)
-- A `--dry-run` mode for the script itself
 - Homebrew formula
 
 ## License
