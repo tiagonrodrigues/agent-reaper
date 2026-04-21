@@ -2,17 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Reverse-DNS label. install.sh replaces {{LABEL}} with your chosen ID. -->
+    <!-- Reverse-DNS label. install.sh replaces {{LABEL}} with the bundle ID. -->
     <key>Label</key>
     <string>{{LABEL}}</string>
 
-    <!-- install.sh substitutes {{BIN_PATH}} with the absolute reap binary path.
-         The LaunchAgent invokes `reap run` every 30 minutes. -->
+    <!-- We invoke the .app bundle's inner executable so macOS attributes the
+         process to "Agent Reaper" (Info.plist inside the .app) instead of
+         showing a generic "bash" / unidentified developer entry in Login Items
+         and Activity Monitor. install.sh replaces {{APP_EXEC_PATH}}. -->
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/bash</string>
-        <string>{{BIN_PATH}}</string>
-        <string>run</string>
+        <string>{{APP_EXEC_PATH}}</string>
     </array>
 
     <!-- Run every 30 minutes (1800 seconds). -->
