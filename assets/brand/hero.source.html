@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>reap · hero</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        @font-face {
+            font-family: 'YapariVariable';
+            src: url('./YapariVariable-Ultra.ttf') format('truetype');
+            font-weight: 100 900;
+            font-display: block;
+        }
+
+        :root {
+            --bg-dark: #050606;
+            --text-primary: #fbfbfb;
+            --text-secondary: #8f8e92;
+            --accent-blue: #0A4DFF;
+            --accent-glow: rgba(10, 77, 255, 0.4);
+            --highlight: #b6b6ff;
+        }
+
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
+
+        body {
+            width: 1600px;
+            height: 620px;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            font-family: 'Montserrat', sans-serif;
+            overflow: hidden;
+            position: relative;
+            /* Subtle radial glow behind the wordmark */
+            background-image:
+                radial-gradient(ellipse 800px 400px at 50% 50%, var(--accent-glow) 0%, transparent 70%),
+                linear-gradient(180deg, var(--bg-dark) 0%, #000 100%);
+        }
+
+        /* Faint grid for depth, almost invisible. */
+        body::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+            background-size: 80px 80px;
+            pointer-events: none;
+        }
+
+        .wordmark {
+            position: absolute;
+            left: 50%;
+            top: 44%;
+            transform: translate(-50%, -50%);
+            font-family: 'YapariVariable', 'Arial Black', sans-serif;
+            font-weight: 900;
+            font-size: 300px;
+            line-height: 0.85;
+            letter-spacing: -0.02em;
+            color: var(--text-primary);
+            text-shadow:
+                0 0 80px var(--accent-glow),
+                0 0 160px rgba(10, 77, 255, 0.25);
+            white-space: nowrap;
+            text-align: center;
+        }
+
+        /* Accent square between letters */
+        .wordmark .dot {
+            display: inline-block;
+            width: 0.18em;
+            height: 0.18em;
+            background: var(--accent-blue);
+            vertical-align: 0.18em;
+            margin: 0 0.06em;
+            border-radius: 2px;
+            box-shadow: 0 0 40px var(--accent-blue);
+        }
+
+        .tagline {
+            position: absolute;
+            left: 50%;
+            top: 73%;
+            transform: translateX(-50%);
+            font-family: 'Montserrat', sans-serif;
+            font-weight: 500;
+            font-size: 28px;
+            letter-spacing: 0.04em;
+            color: var(--text-secondary);
+            text-transform: none;
+            text-align: center;
+            white-space: nowrap;
+        }
+
+        .tagline .em {
+            color: var(--highlight);
+        }
+
+        /* Top-left: command pill */
+        .cmd {
+            position: absolute;
+            left: 60px;
+            top: 60px;
+            font-family: 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
+            font-size: 18px;
+            color: var(--text-secondary);
+            letter-spacing: 0.02em;
+        }
+        .cmd .prompt { color: var(--accent-blue); margin-right: 10px; }
+        .cmd .cursor {
+            display: inline-block;
+            width: 10px;
+            height: 20px;
+            background: var(--text-primary);
+            vertical-align: -3px;
+            margin-left: 6px;
+        }
+
+        /* Bottom-center: by Developh mark */
+        .developh {
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 40px;
+            text-align: center;
+            font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, sans-serif;
+            font-weight: 500;
+            font-size: 22px;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+            color: #8f8e92;
+        }
+        .developh .by { opacity: 0.7; margin-right: 14px; }
+        .developh .mark { color: #fbfbfb; font-weight: 700; }
+        .developh .sep {
+            display: inline-block;
+            width: 2px;
+            height: 18px;
+            background: #0A4DFF;
+            box-shadow: 0 0 10px #0A4DFF;
+            vertical-align: -2px;
+            margin-right: 14px;
+        }
+
+        /* Top-right: version badge */
+        .version {
+            position: absolute;
+            right: 60px;
+            top: 60px;
+            font-family: 'Montserrat', sans-serif;
+            font-weight: 600;
+            font-size: 14px;
+            letter-spacing: 0.2em;
+            color: var(--accent-blue);
+            border: 1px solid var(--accent-blue);
+            padding: 8px 14px;
+            border-radius: 999px;
+            text-transform: uppercase;
+            box-shadow: 0 0 24px rgba(10, 77, 255, 0.25);
+        }
+    </style>
+</head>
+<body>
+    <div class="cmd">
+        <span class="prompt">$</span><span>reap preview</span><span class="cursor"></span>
+    </div>
+
+    <div class="version">v0.4.1 · macOS</div>
+
+    <div class="wordmark">REAP</div>
+    <div class="tagline">Kill the zombie processes your AI coding agents leave behind.</div>
+
+    <div class="developh">
+        <span class="by">by</span><span class="sep"></span><span class="mark">Developh</span>
+    </div>
+</body>
+</html>

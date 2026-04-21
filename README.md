@@ -1,15 +1,16 @@
+<p align="center">
+  <a href="https://developh.co">
+    <img src="./assets/hero.png" alt="reap · by Developh" width="100%">
+  </a>
+</p>
+
 # agent-reaper 🪦
 
 > Kill the zombie processes your AI coding agents leave behind.
 
-<p align="center">
-  <a href="https://developh.co">
-    <img src="./assets/sponsor-developh.svg" alt="Sponsored by developh.co" width="100%">
-  </a>
-</p>
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)]()
+[![License: MIT](https://img.shields.io/badge/License-MIT-0A4DFF.svg)](./LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS-050606.svg)]()
+[![Homebrew](https://img.shields.io/badge/homebrew-tiagonrodrigues%2Ftap-0A4DFF.svg)](https://github.com/tiagonrodrigues/homebrew-tap)
 [![shellcheck](https://github.com/tiagonrodrigues/agent-reaper/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/tiagonrodrigues/agent-reaper/actions/workflows/shellcheck.yml)
 
 A tiny macOS tool that sweeps away the orphaned `claude`, `cursor-agent`, `codex`, `aider`, Playwright, and MCP-server processes that AI-agent wrappers forget to clean up. Runs every 30 minutes in the background. Never touches an active session.
@@ -48,11 +49,22 @@ The `ORPHAN_ONLY` rule is the important one. Active sessions always have their I
 
 ## Install
 
+### Homebrew (recommended)
+
+```bash
+brew install tiagonrodrigues/tap/agent-reaper
+reap install
+```
+
+`brew install` puts the `reap` CLI on your `$PATH`. `reap install` then builds the `.app` bundle, schedules the LaunchAgent, and runs an initial sweep.
+
+### curl
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tiagonrodrigues/agent-reaper/main/install.sh | bash
 ```
 
-Or clone it and run the installer:
+### From source
 
 ```bash
 git clone https://github.com/tiagonrodrigues/agent-reaper.git
@@ -60,8 +72,8 @@ cd agent-reaper
 ./install.sh
 ```
 
-The installer:
-- drops the `reap` CLI into `~/.local/bin/`
+The installer always:
+- places the `reap` CLI somewhere on `$PATH` (Homebrew's `bin/`, or `~/.local/bin/` for the other two modes)
 - builds `~/Applications/Agent Reaper.app` (a proper ad-hoc signed macOS bundle, so Login Items and Activity Monitor show **Agent Reaper**, not a nameless `bash`)
 - loads the LaunchAgent, which fires an initial sweep immediately
 
@@ -193,7 +205,7 @@ Good. Run `reap preview` once and inspect what it would do. The worst case is an
 
 - [x] v0.3 `.app` bundle for macOS identity (Login Items show *Agent Reaper*)
 - [x] v0.4 `reap stats`, MCP server patterns, Playwright coverage
-- [ ] Homebrew tap: `brew install tiagonrodrigues/tap/agent-reaper`
+- [x] v0.4.1 Homebrew tap: `brew install tiagonrodrigues/tap/agent-reaper`
 - [ ] Linux support via `systemd --user` ([#1](https://github.com/tiagonrodrigues/agent-reaper/issues/1))
 - [ ] Patterns for more agent CLIs (Gemini, Replit Agent, etc.)
 
@@ -209,4 +221,14 @@ MIT. See [LICENSE](./LICENSE).
 
 Built by [Tiago Rodrigues](https://twitter.com/tiagoatdeveloph) ([@tiagoatdeveloph](https://twitter.com/tiagoatdeveloph)) out of frustration, after watching his Mac's fan try to achieve liftoff.
 
-Sponsored by [developh.co](https://developh.co), a design studio, built different.
+Brand identity, hero, and palette come from the [Developh](https://developh.co) *Neon Engine* system — documented in [`assets/brand/brand.md`](./assets/brand/brand.md) for anyone extending the project.
+
+---
+
+<p align="center">
+  <a href="https://developh.co">
+    <img src="./assets/brand/developh-icon.svg" alt="Developh" width="40" height="40">
+  </a>
+  <br>
+  <sub>A <a href="https://developh.co">Developh</a> project. Built different.</sub>
+</p>
