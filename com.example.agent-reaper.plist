@@ -6,11 +6,13 @@
     <key>Label</key>
     <string>{{LABEL}}</string>
 
-    <!-- install.sh substitutes {{SCRIPT_PATH}} with the absolute install path. -->
+    <!-- install.sh substitutes {{BIN_PATH}} with the absolute reap binary path.
+         The LaunchAgent invokes `reap run` every 30 minutes. -->
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>{{SCRIPT_PATH}}</string>
+        <string>{{BIN_PATH}}</string>
+        <string>run</string>
     </array>
 
     <!-- Run every 30 minutes (1800 seconds). -->

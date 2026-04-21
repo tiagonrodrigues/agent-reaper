@@ -1,15 +1,18 @@
 #!/bin/bash
 # agent-reaper uninstaller
-# Removes the LaunchAgent and script. Preserves config and logs by default.
+# https://github.com/tiagonrodrigues/agent-reaper
+#
+# Removes the LaunchAgent and `reap` CLI. Preserves config and logs by default.
 # Pass --purge to also remove config and logs.
 
 set -euo pipefail
 
-LABEL="co.tiagor.agent-reaper"
-SCRIPT_PATH="$HOME/.local/bin/agent-reaper.sh"
-PLIST_PATH="$HOME/Library/LaunchAgents/$LABEL.plist"
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-reaper"
-LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/share}/agent-reaper"
+readonly LABEL="co.tiagor.agent-reaper"
+readonly BIN_PATH="$HOME/.local/bin/reap"
+readonly LEGACY_SCRIPT="$HOME/.local/bin/agent-reaper.sh"
+readonly PLIST_PATH="$HOME/Library/LaunchAgents/$LABEL.plist"
+readonly CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-reaper"
+readonly LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/share}/agent-reaper"
 
 echo "🪦 Uninstalling agent-reaper..."
 
@@ -20,11 +23,13 @@ if [ -f "$PLIST_PATH" ]; then
     echo "  ✓ LaunchAgent removed"
 fi
 
-# Remove script
-if [ -f "$SCRIPT_PATH" ]; then
-    rm -f "$SCRIPT_PATH"
-    echo "  ✓ Script removed"
-fi
+# Remove reap CLI (and legacy script if present)
+for path in "$BIN_PATH" "$LEGACY_SCRIPT"; do
+    if [ -f "$path" ]; then
+        rm -f "$path"
+        echo "  ✓ Removed $path"
+    fi
+done
 
 # Purge config + logs if requested
 if [ "${1:-}" = "--purge" ]; then
