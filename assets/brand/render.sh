@@ -1,18 +1,44 @@
 #!/bin/bash
-# Render the agent-reaper README hero from hero.source.html to assets/hero.png.
-# Uses headless Chrome so the Yapari Variable font actually rasterizes.
+# Render brand PNGs from their HTML sources using headless Chrome.
 #
-#   ./assets/brand/render-hero.sh
+# Usage:
+#   ./assets/brand/render.sh                     # hero (1600×620)
+#   ./assets/brand/render.sh hero                # same
+#   ./assets/brand/render.sh social-preview      # 1280×640 OpenGraph card
 #
-# Output:
-#   ./assets/hero.png   (1600×560, captured at 2x DPR → effectively 3200×1120)
+# Outputs:
+#   assets/<target>.png
+#
+# Chrome headless on macOS reserves ~80-100px of chrome even with
+# --headless=new, which clips content positioned near the viewport
+# edge. Workaround: render into a taller window, then crop the PNG
+# down to the intended content size.
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
-SRC="$HERE/hero.source.html"
-OUT="$REPO_ROOT/assets/hero.png"
+
+TARGET="${1:-hero}"
+
+case "$TARGET" in
+    hero)
+        CONTENT_W=1600
+        CONTENT_H=620
+        ;;
+    social-preview)
+        CONTENT_W=1280
+        CONTENT_H=640
+        ;;
+    *)
+        echo "Unknown target: $TARGET" >&2
+        echo "Valid targets: hero, social-preview" >&2
+        exit 2
+        ;;
+esac
+
+SRC="$HERE/${TARGET}.source.html"
+OUT="$REPO_ROOT/assets/${TARGET}.png"
 
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 if [ ! -x "$CHROME" ]; then
@@ -22,23 +48,17 @@ if [ ! -x "$CHROME" ]; then
 fi
 
 if [ ! -f "$SRC" ]; then
-    echo "Missing hero source: $SRC" >&2
+    echo "Missing source: $SRC" >&2
     exit 1
 fi
 
 TMP_PROFILE=$(mktemp -d)
 trap 'rm -rf "$TMP_PROFILE"' EXIT
 
-# Chrome headless on macOS reserves ~80–100px of chrome (even with --headless=new)
-# which clips content positioned with `bottom:` near the real viewport edge.
-# Workaround: render into a taller window, then crop the PNG down to the
-# intended content height.
-CONTENT_W=1600
-CONTENT_H=620
 WINDOW_H=$((CONTENT_H + 120))
 
-# Chrome sometimes doesn't exit cleanly after writing the screenshot; cap it
-# at 15s so the renderer always makes forward progress.
+# Chrome sometimes doesn't exit cleanly after writing the screenshot;
+# cap it at 15s so the renderer always makes forward progress.
 "$CHROME" \
     --headless=new \
     --disable-gpu \
@@ -62,7 +82,7 @@ if [ ! -f "$OUT" ]; then
     exit 1
 fi
 
-# Crop to content dimensions (at 2× DPR the raw PNG is ${CONTENT_W}*2 wide).
+# Crop to content dimensions (at 2× DPR the raw PNG is CONTENT_W*2 wide).
 python3 - "$OUT" "$CONTENT_W" "$CONTENT_H" <<'PY'
 import sys
 from PIL import Image
