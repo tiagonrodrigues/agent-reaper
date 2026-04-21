@@ -221,8 +221,6 @@ MIT. See [LICENSE](./LICENSE).
 
 Built by [Tiago Rodrigues](https://twitter.com/tiagoatdeveloph) ([@tiagoatdeveloph](https://twitter.com/tiagoatdeveloph)) out of frustration, after watching his Mac's fan try to achieve liftoff.
 
-Brand identity, hero, and palette come from the [Developh](https://developh.co) *Neon Engine* system — documented in [`assets/brand/brand.md`](./assets/brand/brand.md) for anyone extending the project.
-
 ---
 
 <p align="center">
