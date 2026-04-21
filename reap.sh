@@ -1,5 +1,5 @@
 #!/bin/bash
-# reap — kill zombie processes left behind by AI-agent wrappers.
+# reap: kill zombie processes left behind by AI-agent wrappers.
 # https://github.com/tiagonrodrigues/agent-reaper
 #
 # Usage:
@@ -13,13 +13,13 @@
 #   reap --version | --help
 
 set -u
-# Note: `set -e` is intentionally avoided — reap should never crash on a single
+# Note: `set -e` is intentionally avoided. reap should never crash on a single
 # misbehaving pattern; each rule is isolated and errors are logged.
 
 # =============================================================================
 # CONSTANTS
 # =============================================================================
-readonly REAP_VERSION="0.2.0"
+readonly REAP_VERSION="0.3.0"
 readonly REAP_LABEL="co.tiagor.agent-reaper"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-reaper"
@@ -29,7 +29,7 @@ readonly CONFIG_FILE="$CONFIG_DIR/config.sh"
 readonly LOG_FILE="$LOG_DIR/reap.log"
 
 # Safety: max PIDs a single rule may kill in one run. If exceeded, rule is
-# aborted and logged — something's probably wrong (user pattern too broad).
+# aborted and logged. Something's probably wrong (user pattern too broad).
 readonly MAX_KILLS_PER_RULE=50
 
 # Safety: hard blocklist. Patterns matching any of these substrings are
@@ -89,7 +89,7 @@ err() { echo "${C_RED}error:${C_RESET} $*" >&2; }
 warn() { echo "${C_YELLOW}warn:${C_RESET}  $*" >&2; }
 
 # =============================================================================
-# HARD SAFETY — applied to every rule
+# HARD SAFETY (applied to every rule)
 # =============================================================================
 
 # Refuse to run as root. reap operates on the invoking user's own processes;
@@ -118,7 +118,7 @@ is_blocked() {
     local pid="$1"
     local cmd
     cmd=$(ps -p "$pid" -o command= 2>/dev/null || echo "")
-    [ -z "$cmd" ] && return 0  # Gone — don't touch
+    [ -z "$cmd" ] && return 0  # Gone, don't touch
     local block
     for block in "${BLOCKLIST[@]}"; do
         case "$cmd" in
@@ -238,7 +238,7 @@ process_rule() {
     count=$(echo "$pids" | wc -w | tr -d ' ')
     if [ "$count" -gt "$MAX_KILLS_PER_RULE" ]; then
         warn "rule '$pattern' ($mode) matched $count processes (>$MAX_KILLS_PER_RULE cap)"
-        warn "aborting this rule — review manually, something looks off"
+        warn "aborting this rule. Review manually, something looks off"
         log "ABORTED rule '$pattern' ($mode): $count matches exceeds cap"
         return
     fi
@@ -252,16 +252,16 @@ process_rule() {
 
     if [ "$DRY_RUN" = "1" ]; then
         echo ""
-        echo "${C_YELLOW}would kill${C_RESET} ${C_BOLD}$count${C_RESET} process(es) — ${C_DIM}$label: $pattern${C_RESET}"
+        echo "${C_YELLOW}would kill${C_RESET} ${C_BOLD}$count${C_RESET} process(es), ${C_DIM}$label: $pattern${C_RESET}"
         local pid
         for pid in $pids; do format_pid_row "$pid"; done
         DRY_TOTAL=$((DRY_TOTAL + count))
     else
         # shellcheck disable=SC2086
         kill -9 $pids 2>/dev/null || true
-        log "Killed $count ($label: $pattern) — PIDs: $pids"
+        log "Killed $count ($label: $pattern). PIDs: $pids"
         if [ "$VERBOSE" = "1" ]; then
-            echo "${C_RED}killed${C_RESET} $count — ${C_DIM}$label: $pattern${C_RESET}"
+            echo "${C_RED}killed${C_RESET} $count, ${C_DIM}$label: $pattern${C_RESET}"
         fi
         KILL_TOTAL=$((KILL_TOTAL + count))
     fi
@@ -286,8 +286,8 @@ cmd_run() {
     process_all_rules
 
     if [ "$KILL_TOTAL" -eq 0 ]; then
-        log "Clean run — no zombies found"
-        [ "$VERBOSE" = "1" ] && echo "${C_GREEN}clean${C_RESET} — no zombies found"
+        log "Clean run, no zombies found"
+        [ "$VERBOSE" = "1" ] && echo "${C_GREEN}clean${C_RESET}, no zombies found"
     else
         log "=== Reaped $KILL_TOTAL process(es) ==="
         [ "$VERBOSE" = "1" ] && echo "${C_BOLD}reaped $KILL_TOTAL process(es)${C_RESET}"
@@ -304,12 +304,12 @@ cmd_preview() {
     DRY_RUN=1
     DRY_TOTAL=0
 
-    echo "${C_BLUE}${C_BOLD}reap preview${C_RESET} ${C_DIM}(dry-run — nothing will be killed)${C_RESET}"
+    echo "${C_BLUE}${C_BOLD}reap preview${C_RESET} ${C_DIM}(dry-run, nothing will be killed)${C_RESET}"
     process_all_rules
 
     echo ""
     if [ "$DRY_TOTAL" -eq 0 ]; then
-        echo "${C_GREEN}clean${C_RESET} — no zombies detected"
+        echo "${C_GREEN}clean${C_RESET}, no zombies detected"
     else
         echo "${C_BOLD}would reap $DRY_TOTAL process(es)${C_RESET}  ${C_DIM}(run 'reap run' to do it)${C_RESET}"
     fi
@@ -324,7 +324,7 @@ cmd_status() {
     if launchctl list 2>/dev/null | grep -q "$REAP_LABEL"; then
         echo "${C_GREEN}●${C_RESET} scheduled    every 30 minutes via launchd"
     else
-        echo "${C_YELLOW}○${C_RESET} not scheduled — run '${C_BOLD}reap install${C_RESET}'"
+        echo "${C_YELLOW}○${C_RESET} not scheduled. Run '${C_BOLD}reap install${C_RESET}'"
     fi
 
     local a="${#ALWAYS_KILL[@]}" o="${#ORPHAN_ONLY[@]}" s="${#OLD_PROCESS[@]}"
@@ -344,7 +344,7 @@ cmd_status() {
 
 cmd_logs() {
     if [ ! -f "$LOG_FILE" ]; then
-        echo "no log yet — run 'reap run' or wait for the scheduled sweep"
+        echo "no log yet. Run 'reap run' or wait for the scheduled sweep"
         return
     fi
     case "${1:-}" in
@@ -387,7 +387,7 @@ cmd_uninstall() {
 
 show_help() {
     cat <<EOF
-${C_BOLD}reap${C_RESET} ${C_DIM}v${REAP_VERSION}${C_RESET} — kill zombie processes left by AI-agent wrappers
+${C_BOLD}reap${C_RESET} ${C_DIM}v${REAP_VERSION}${C_RESET}: kill zombie processes left by AI-agent wrappers
 
 ${C_BOLD}USAGE${C_RESET}
   reap                    Show status and recent activity
