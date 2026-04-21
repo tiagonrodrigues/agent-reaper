@@ -19,7 +19,7 @@ set -u
 # =============================================================================
 # CONSTANTS
 # =============================================================================
-readonly REAP_VERSION="0.3.0"
+readonly REAP_VERSION="0.4.0"
 readonly REAP_LABEL="co.tiagor.agent-reaper"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-reaper"
@@ -154,10 +154,15 @@ load_config() {
         "cursor-agent.*stream"
         "codex.*--output-format"
         "aider.*--stream"
+        # MCP servers spawned by AI IDEs. They're almost always children of
+        # the IDE, so they become orphans the moment the IDE dies.
+        "node.*mcp-server-"
+        "node.*@modelcontextprotocol/server-"
     )
     OLD_PROCESS=(
         "ms-playwright/chromium"
         "puppeteer.*chromium"
+        "chrome-headless-shell"
     )
     OLD_THRESHOLD_HOURS=2
     VERBOSE=0
@@ -339,7 +344,7 @@ cmd_status() {
     fi
 
     echo ""
-    echo "${C_DIM}commands: reap preview · reap run · reap logs · reap config${C_RESET}"
+    echo "${C_DIM}commands: reap preview · reap run · reap stats · reap logs · reap config${C_RESET}"
 }
 
 cmd_logs() {
@@ -351,6 +356,100 @@ cmd_logs() {
         -f|--follow) tail -f "$LOG_FILE" ;;
         *) tail -n 40 "$LOG_FILE" ;;
     esac
+}
+
+cmd_stats() {
+    if [ ! -f "$LOG_FILE" ] || [ ! -s "$LOG_FILE" ]; then
+        echo "no history yet. Run reap a few times first."
+        return
+    fi
+
+    # Cross-platform date arithmetic: BSD date first (macOS), GNU date fallback.
+    local week_ago month_ago
+    if date -v-7d +%Y-%m-%d >/dev/null 2>&1; then
+        week_ago=$(date -v-7d +%Y-%m-%d)
+        month_ago=$(date -v-30d +%Y-%m-%d)
+    else
+        week_ago=$(date -d '-7 days' +%Y-%m-%d 2>/dev/null)
+        month_ago=$(date -d '-30 days' +%Y-%m-%d 2>/dev/null)
+    fi
+
+    echo "${C_BOLD}reap stats${C_RESET}"
+    echo ""
+
+    # Totals + run counts in one awk pass.
+    awk -v week="$week_ago" -v month="$month_ago" \
+        -v c_bold="$C_BOLD" -v c_dim="$C_DIM" -v c_reset="$C_RESET" '
+        /Killed [0-9]+ \(/ {
+            date = substr($0, 2, 10)
+            match($0, /Killed [0-9]+/)
+            n = substr($0, RSTART + 7, RLENGTH - 7) + 0
+            tot += n
+            if (date >= week)  wk += n
+            if (date >= month) mo += n
+            kill_runs++
+        }
+        /Clean run/ { clean_runs++ }
+        END {
+            total_runs = clean_runs + kill_runs
+            printf "%sreaped:%s %s%d%s total  %s%d%s this week  %s%d%s this month\n",
+                c_bold, c_reset,
+                c_bold, tot+0, c_reset,
+                c_bold, wk+0, c_reset,
+                c_bold, mo+0, c_reset
+            printf "%sruns:%s   %s%d%s total  %s%d%s clean  %s%d%s with kills\n",
+                c_bold, c_reset,
+                c_bold, total_runs, c_reset,
+                c_bold, clean_runs+0, c_reset,
+                c_bold, kill_runs+0, c_reset
+        }
+    ' "$LOG_FILE"
+
+    # Top 5 most-reaped patterns, sorted by kill count.
+    local top
+    top=$(awk '
+        /Killed [0-9]+ \(/ {
+            match($0, /Killed [0-9]+/)
+            n = substr($0, RSTART + 7, RLENGTH - 7) + 0
+            if (match($0, /: [^)]+\)\. PIDs:/)) {
+                pat = substr($0, RSTART + 2, RLENGTH - 10)
+                counts[pat] += n
+            }
+        }
+        END {
+            for (p in counts) print counts[p]"\t"p
+        }
+    ' "$LOG_FILE" | sort -rn | head -5)
+
+    if [ -n "$top" ]; then
+        echo ""
+        echo "${C_BOLD}top targets${C_RESET}"
+        printf '%s\n' "$top" | while IFS=$'\t' read -r count pattern; do
+            printf "  ${C_BOLD}%-5d${C_RESET}  ${C_DIM}%s${C_RESET}\n" "$count" "$pattern"
+        done
+    fi
+
+    # Busiest day in the log.
+    local busiest
+    busiest=$(awk '
+        /Killed [0-9]+ \(/ {
+            date = substr($0, 2, 10)
+            match($0, /Killed [0-9]+/)
+            n = substr($0, RSTART + 7, RLENGTH - 7) + 0
+            per_day[date] += n
+        }
+        END {
+            for (d in per_day) print per_day[d]"\t"d
+        }
+    ' "$LOG_FILE" | sort -rn | head -1)
+
+    if [ -n "$busiest" ]; then
+        echo ""
+        local bc bd
+        bc=$(echo "$busiest" | cut -f1)
+        bd=$(echo "$busiest" | cut -f2)
+        echo "${C_DIM}busiest day: ${bd} (${bc} zombies reaped)${C_RESET}"
+    fi
 }
 
 cmd_config() {
@@ -393,6 +492,7 @@ ${C_BOLD}USAGE${C_RESET}
   reap                    Show status and recent activity
   reap preview            Dry-run: show what would be killed
   reap run                Kill zombies now
+  reap stats              Historical totals (this week, month, top targets)
   reap logs [-f]          Tail the log (-f to follow)
   reap config             Open config in \$EDITOR
   reap install            (Re)install the LaunchAgent
@@ -419,6 +519,7 @@ main() {
         run)                 shift; cmd_run "$@" ;;
         preview|dry-run)     shift; cmd_preview "$@" ;;
         logs|log)            shift; cmd_logs "$@" ;;
+        stats|history)       shift; cmd_stats "$@" ;;
         config|edit)         shift; cmd_config "$@" ;;
         status)              shift; cmd_status "$@" ;;
         install)             shift; cmd_install "$@" ;;
