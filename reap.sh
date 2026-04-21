@@ -19,7 +19,7 @@ set -u
 # =============================================================================
 # CONSTANTS
 # =============================================================================
-readonly REAP_VERSION="0.4.0"
+readonly REAP_VERSION="0.4.1"
 readonly REAP_LABEL="co.tiagor.agent-reaper"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-reaper"
@@ -461,27 +461,41 @@ cmd_config() {
     "${EDITOR:-vi}" "$CONFIG_FILE"
 }
 
+# Find a bundled script (install.sh / uninstall.sh) without curling.
+# Search order:
+#   1. Next to reap itself                (git clone layout).
+#   2. $here/../share/agent-reaper/       (Homebrew pkgshare layout).
+# Prints the resolved path on stdout if found, returns non-zero otherwise.
+find_bundled_script() {
+    local name="$1" here candidate
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    for candidate in "$here/$name" "$here/../share/agent-reaper/$name"; do
+        if [ -f "$candidate" ]; then
+            # Normalize so "$here/../share/..." becomes an absolute path.
+            ( cd "$(dirname "$candidate")" && printf '%s/%s\n' "$(pwd)" "$name" )
+            return 0
+        fi
+    done
+    return 1
+}
+
 cmd_install() {
     require_nonroot
-    local here
-    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local installer="$here/install.sh"
-    if [ ! -f "$installer" ]; then
-        exec bash -c "curl -fsSL https://raw.githubusercontent.com/tiagonrodrigues/agent-reaper/main/install.sh | bash"
+    local installer
+    if installer="$(find_bundled_script install.sh)"; then
+        exec bash "$installer" "$@"
     fi
-    exec bash "$installer" "$@"
+    exec bash -c "curl -fsSL https://raw.githubusercontent.com/tiagonrodrigues/agent-reaper/main/install.sh | bash"
 }
 
 cmd_uninstall() {
     require_nonroot
-    local here
-    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local uninstaller="$here/uninstall.sh"
-    if [ ! -f "$uninstaller" ]; then
-        local arg="${1:-}"
-        exec bash -c "curl -fsSL https://raw.githubusercontent.com/tiagonrodrigues/agent-reaper/main/uninstall.sh | bash -s -- $arg"
+    local uninstaller
+    if uninstaller="$(find_bundled_script uninstall.sh)"; then
+        exec bash "$uninstaller" "$@"
     fi
-    exec bash "$uninstaller" "$@"
+    local arg="${1:-}"
+    exec bash -c "curl -fsSL https://raw.githubusercontent.com/tiagonrodrigues/agent-reaper/main/uninstall.sh | bash -s -- $arg"
 }
 
 show_help() {

@@ -1,6 +1,8 @@
 #!/bin/bash
 # AgentReaper.app inner executable.
 # This runs as the background agent identified to macOS by the app bundle.
-# The actual logic lives in ~/.local/bin/reap (installed by install.sh).
+# install.sh renders this from the template, replacing the placeholder on the
+# exec line below with the absolute path to the reap CLI found on this machine
+# (e.g. ~/.local/bin/reap, /opt/homebrew/bin/reap).
 
-exec "$HOME/.local/bin/reap" run "$@"
+exec "{{REAP_PATH}}" run "$@"
