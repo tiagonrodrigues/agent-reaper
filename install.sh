@@ -15,7 +15,7 @@
 set -euo pipefail
 
 readonly REPO_RAW="https://raw.githubusercontent.com/tiagonrodrigues/agent-reaper/main"
-readonly VERSION="0.4.1"
+readonly VERSION="0.5.0"
 readonly LABEL="co.tiagor.agent-reaper"
 
 readonly LOCAL_BIN_DIR="$HOME/.local/bin"
