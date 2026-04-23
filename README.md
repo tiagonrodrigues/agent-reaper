@@ -13,7 +13,7 @@
 [![Homebrew](https://img.shields.io/badge/homebrew-tiagonrodrigues%2Ftap-0A4DFF.svg)](https://github.com/tiagonrodrigues/homebrew-tap)
 [![shellcheck](https://github.com/tiagonrodrigues/agent-reaper/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/tiagonrodrigues/agent-reaper/actions/workflows/shellcheck.yml)
 
-A tiny macOS tool that sweeps away the orphaned `claude`, `cursor-agent`, `codex`, `aider`, Playwright, and MCP-server processes that AI-agent wrappers forget to clean up. Runs every 30 minutes in the background. Never touches an active session.
+A tiny macOS tool that sweeps away the orphaned `claude`, `cursor-agent`, `codex`, `aider`, Playwright, and MCP-server processes that AI-agent wrappers forget to clean up. Runs every 30 minutes in the background. Safe by default — only touches processes whose parent already died. Optional memory-based tier for the occasional 5 GB Chrome tab.
 
 > The repo is `agent-reaper`. The CLI you actually type is `reap`. Think of it like `homebrew` the project vs `brew` the command.
 
@@ -37,15 +37,18 @@ Agent wrappers spawn child processes and don't always reap them when you close a
 
 ## The fix
 
-A shell script, a LaunchAgent, and a small CLI. The LaunchAgent runs every 30 minutes and decides what to kill using three tiers:
+A shell script, a LaunchAgent, and a small CLI. The LaunchAgent runs every 30 minutes and decides what to kill using four tiers:
 
 | Tier | When it kills | Example targets |
 |---|---|---|
 | `ALWAYS_KILL` | Every run, unconditionally | Tools you never use that keep spawning |
 | `ORPHAN_ONLY` | Only if `PPID=1` (parent died) | `claude`, `cursor-agent`, `codex`, `aider`, MCP servers |
 | `OLD_PROCESS` | Only if older than N hours | `playwright chromium`, `chrome-headless-shell`, `puppeteer` |
+| `HEAVY_MEMORY` | Only if RSS > N MB (opt-in) | runaway Chrome tabs, bloated `node opencode serve` |
 
-The `ORPHAN_ONLY` rule is the important one. Active sessions always have their IDE or terminal as parent, so they're never candidates. Only the processes whose wrapper already died get reaped. Zero false positives in practice.
+The `ORPHAN_ONLY` tier is the important one for the default case. Active sessions always have their IDE or terminal as parent, so they're never candidates. Only the processes whose wrapper already died get reaped. Zero false positives in practice.
+
+`HEAVY_MEMORY` is opt-in because it *can* touch processes whose parent is still alive — that's the point: one Chrome tab stuck in a JS loop eating 2 GB gets reaped before it drags your Mac into swap hell. Empty by default, patterns must be added explicitly, and all the other safety guards still apply.
 
 ## Install
 
@@ -88,8 +91,10 @@ The installer always:
 | Command | What it does |
 |---|---|
 | `reap` | Status: schedule, config summary, recent activity |
-| `reap preview` | Dry-run. Shows exactly what would be killed (PIDs, age, command). Kills nothing. |
+| `reap preview` | Dry-run grouped by rule. Shows exactly what would be killed (PIDs, age, command). Kills nothing. |
+| `reap top` | Same candidates, flat list sorted by RSS. Good for spotting memory hogs at a glance. |
 | `reap run` | Kill zombies now. Also what the LaunchAgent calls every 30 minutes. |
+| `reap doctor` | Full health check: scheduler loaded, app bundle intact, config sane, last run recent. |
 | `reap stats` | Historical totals: this week, this month, top targets, busiest day. |
 | `reap logs [-f]` | Show recent log entries. Pass `-f` to follow. |
 | `reap config` | Open `~/.config/agent-reaper/config.sh` in `$EDITOR` |
@@ -154,6 +159,15 @@ OLD_PROCESS=(
     "chrome-headless-shell"
 )
 OLD_THRESHOLD_HOURS=2
+
+# Opt-in: kill processes whose RSS exceeds the threshold, even when
+# their parent is alive. Empty by default. Use `reap top` to see
+# what would match before enabling.
+HEAVY_MEMORY=(
+    # "Google Chrome Helper"     # any Chrome renderer tab >2GB
+    # "node.*opencode"           # opencode serve leaks
+)
+HEAVY_MEMORY_MB=2000
 ```
 
 ## Safety
@@ -206,6 +220,8 @@ Good. Run `reap preview` once and inspect what it would do. The worst case is an
 - [x] v0.3 `.app` bundle for macOS identity (Login Items show *Agent Reaper*)
 - [x] v0.4 `reap stats`, MCP server patterns, Playwright coverage
 - [x] v0.4.1 Homebrew tap: `brew install tiagonrodrigues/tap/agent-reaper`
+- [x] v0.5 `HEAVY_MEMORY` tier, `reap top`, `reap doctor`
+- [ ] GitHub Actions release automation (tag → tap bump)
 - [ ] Linux support via `systemd --user` ([#1](https://github.com/tiagonrodrigues/agent-reaper/issues/1))
 - [ ] Patterns for more agent CLIs (Gemini, Replit Agent, etc.)
 

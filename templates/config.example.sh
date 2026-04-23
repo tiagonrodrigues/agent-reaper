@@ -53,6 +53,25 @@ OLD_PROCESS=(
 OLD_THRESHOLD_HOURS=2
 
 # =============================================================================
+# HEAVY_MEMORY: patterns killed when RSS exceeds HEAVY_MEMORY_MB, regardless
+# of PPID. This is an *opt-in* tier for catching runaway live processes.
+#
+# Unlike the other tiers it can kill processes whose parent is alive, so
+# keep patterns specific. Empty by default — uncomment to opt in.
+#
+# Use cases: a Chrome tab stuck in a JS loop eating 2GB, an opencode serve
+# leaking to 5GB, a node process that won't release memory after a task.
+#
+# `reap top` shows you what these rules would catch right now.
+# =============================================================================
+HEAVY_MEMORY=(
+    # "Google Chrome Helper"                      # any Chrome renderer >threshold
+    # "node.*opencode"                            # opencode serve memory leaks
+    # "electron.*--renderer"                      # generic Electron renderer bloat
+)
+HEAVY_MEMORY_MB=2000   # RSS threshold in MB
+
+# =============================================================================
 # Other options
 # =============================================================================
 VERBOSE=0   # 1 = also print to stderr (useful when debugging)

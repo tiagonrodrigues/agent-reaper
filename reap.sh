@@ -19,7 +19,7 @@ set -u
 # =============================================================================
 # CONSTANTS
 # =============================================================================
-readonly REAP_VERSION="0.4.1"
+readonly REAP_VERSION="0.5.0"
 readonly REAP_LABEL="co.tiagor.agent-reaper"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-reaper"
@@ -165,6 +165,14 @@ load_config() {
         "chrome-headless-shell"
     )
     OLD_THRESHOLD_HOURS=2
+
+    # HEAVY_MEMORY: opt-in tier that kills processes whose RSS exceeds
+    # HEAVY_MEMORY_MB, regardless of PPID. Empty by default; users must
+    # opt in explicitly. All other safety (blocklist, UID scope, max-kill
+    # cap, pattern sanity) still applies.
+    HEAVY_MEMORY=()
+    HEAVY_MEMORY_MB=2000
+
     VERBOSE=0
 
     if [ -f "$CONFIG_FILE" ]; then
@@ -203,6 +211,18 @@ match_stale() {
         '
 }
 
+# match_heavy: pattern matches AND rss (KB) >= threshold (MB * 1024).
+# Independent of PPID — this tier catches active memory hogs that haven't
+# been orphaned yet. Still constrained by the hard blocklist and the
+# per-rule max-kill cap, same as every other tier.
+match_heavy() {
+    local pattern="$1"
+    local mb="$2"
+    local kb=$((mb * 1024))
+    ps -U "$(id -u)" -o pid,rss,command | \
+        awk -v pat="$pattern" -v kb="$kb" 'NR>1 && $0 ~ pat && $2+0 >= kb {print $1}'
+}
+
 # =============================================================================
 # CORE: per-rule execution
 # =============================================================================
@@ -233,6 +253,7 @@ process_rule() {
         always) pids_raw=$(match_always "$pattern") ;;
         orphan) pids_raw=$(match_orphan "$pattern") ;;
         stale)  pids_raw=$(match_stale  "$pattern" "$thresh") ;;
+        heavy)  pids_raw=$(match_heavy  "$pattern" "$thresh") ;;
     esac
 
     local pids
@@ -253,6 +274,7 @@ process_rule() {
         always) label="always" ;;
         orphan) label="orphan (PPID=1)" ;;
         stale)  label="stale (>${thresh}h)" ;;
+        heavy)  label="heavy (>${thresh}MB RSS)" ;;
     esac
 
     if [ "$DRY_RUN" = "1" ]; then
@@ -274,9 +296,10 @@ process_rule() {
 
 process_all_rules() {
     local p
-    for p in ${ALWAYS_KILL[@]+"${ALWAYS_KILL[@]}"}; do process_rule always "$p"; done
-    for p in ${ORPHAN_ONLY[@]+"${ORPHAN_ONLY[@]}"}; do process_rule orphan "$p"; done
-    for p in ${OLD_PROCESS[@]+"${OLD_PROCESS[@]}"}; do process_rule stale  "$p" "$OLD_THRESHOLD_HOURS"; done
+    for p in ${ALWAYS_KILL[@]+"${ALWAYS_KILL[@]}"};   do process_rule always "$p"; done
+    for p in ${ORPHAN_ONLY[@]+"${ORPHAN_ONLY[@]}"};   do process_rule orphan "$p"; done
+    for p in ${OLD_PROCESS[@]+"${OLD_PROCESS[@]}"};   do process_rule stale  "$p" "$OLD_THRESHOLD_HOURS"; done
+    for p in ${HEAVY_MEMORY[@]+"${HEAVY_MEMORY[@]}"}; do process_rule heavy  "$p" "$HEAVY_MEMORY_MB"; done
 }
 
 # =============================================================================
@@ -332,8 +355,8 @@ cmd_status() {
         echo "${C_YELLOW}○${C_RESET} not scheduled. Run '${C_BOLD}reap install${C_RESET}'"
     fi
 
-    local a="${#ALWAYS_KILL[@]}" o="${#ORPHAN_ONLY[@]}" s="${#OLD_PROCESS[@]}"
-    echo "${C_DIM}  config: $a always-kill · $o orphan-only · $s stale (>${OLD_THRESHOLD_HOURS}h)${C_RESET}"
+    local a="${#ALWAYS_KILL[@]}" o="${#ORPHAN_ONLY[@]}" s="${#OLD_PROCESS[@]}" h="${#HEAVY_MEMORY[@]}"
+    echo "${C_DIM}  config: $a always · $o orphan · $s stale (>${OLD_THRESHOLD_HOURS}h) · $h heavy (>${HEAVY_MEMORY_MB}MB)${C_RESET}"
 
     if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
         echo ""
@@ -344,7 +367,200 @@ cmd_status() {
     fi
 
     echo ""
-    echo "${C_DIM}commands: reap preview · reap run · reap stats · reap logs · reap config${C_RESET}"
+    echo "${C_DIM}commands: reap preview · reap top · reap run · reap doctor · reap stats · reap logs · reap config${C_RESET}"
+}
+
+# cmd_top — list processes that match *any* configured rule, sorted by
+# resident memory. No kills. Great for "what's about to get reaped?" and
+# for demoing the HEAVY_MEMORY tier ("look at that 5GB zombie").
+cmd_top() {
+    require_nonroot
+    load_config
+
+    echo "${C_BOLD}reap top${C_RESET} ${C_DIM}(candidates, ordered by RSS — nothing will be killed)${C_RESET}"
+    echo ""
+
+    # Collect "pid<TAB>tier<TAB>pattern" for every match. First match per
+    # PID wins (process_all_rules evaluates in the same order, so this
+    # lines up with what the next real run would actually do).
+    local rows=""
+    local pattern pid
+
+    add_rows() {
+        local mode="$1"; local pattern="$2"; local thresh="${3:-}"
+        is_pattern_safe "$pattern" || return 0
+        local pids_raw pids pid tier
+        case "$mode" in
+            always) pids_raw=$(match_always "$pattern");          tier="always" ;;
+            orphan) pids_raw=$(match_orphan "$pattern");          tier="orphan" ;;
+            stale)  pids_raw=$(match_stale  "$pattern" "$thresh"); tier="stale(>${thresh}h)" ;;
+            heavy)  pids_raw=$(match_heavy  "$pattern" "$thresh"); tier="heavy(>${thresh}MB)" ;;
+        esac
+        pids=$(sanitize_pids "$pids_raw")
+        for pid in $pids; do
+            rows="${rows}${pid}"$'\t'"${tier}"$'\t'"${pattern}"$'\n'
+        done
+    }
+
+    for pattern in ${ALWAYS_KILL[@]+"${ALWAYS_KILL[@]}"};   do add_rows always "$pattern"; done
+    for pattern in ${ORPHAN_ONLY[@]+"${ORPHAN_ONLY[@]}"};   do add_rows orphan "$pattern"; done
+    for pattern in ${OLD_PROCESS[@]+"${OLD_PROCESS[@]}"};   do add_rows stale  "$pattern" "$OLD_THRESHOLD_HOURS"; done
+    for pattern in ${HEAVY_MEMORY[@]+"${HEAVY_MEMORY[@]}"}; do add_rows heavy  "$pattern" "$HEAVY_MEMORY_MB"; done
+
+    if [ -z "$rows" ]; then
+        echo "${C_GREEN}clean${C_RESET}, no processes match current rules"
+        return
+    fi
+
+    # Dedup by pid, keep first occurrence.
+    local unique
+    unique=$(printf '%b' "$rows" | awk -F'\t' '!seen[$1]++')
+
+    # Enrich with rss/cpu/age/cmd and sort by RSS desc.
+    printf "  ${C_DIM}%-7s  %-8s  %-6s  %-10s  %-22s  %s${C_RESET}\n" \
+        "PID" "RSS" "%CPU" "AGE" "TIER" "COMMAND"
+    printf '%s\n' "$unique" | while IFS=$'\t' read -r pid tier _pattern; do
+        [ -z "$pid" ] && continue
+        local info rss pct age cmd
+        info=$(ps -p "$pid" -o rss=,%cpu=,etime=,command= 2>/dev/null) || continue
+        [ -z "$info" ] && continue
+        rss=$(echo "$info" | awk '{print $1}')
+        pct=$(echo "$info" | awk '{print $2}')
+        age=$(echo "$info" | awk '{print $3}')
+        cmd=$(echo "$info" | awk '{$1=$2=$3=""; sub(/^ +/, ""); print}' | cut -c1-52)
+        printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$rss" "$pid" "$pct" "$age" "$tier" "$cmd"
+    done | sort -rn | while IFS=$'\t' read -r rss pid pct age tier cmd; do
+        [ -z "$rss" ] && continue
+        local rss_h
+        if   [ "$rss" -ge 1048576 ]; then rss_h=$(awk -v k="$rss" 'BEGIN{printf "%.1fG", k/1048576}')
+        elif [ "$rss" -ge 1024 ];    then rss_h=$(awk -v k="$rss" 'BEGIN{printf "%dM", k/1024}')
+        else                              rss_h="${rss}K"
+        fi
+        printf "  ${C_DIM}%-7s${C_RESET}  ${C_BOLD}%-8s${C_RESET}  %-6s  %-10s  %-22s  %s\n" \
+            "$pid" "$rss_h" "$pct" "$age" "$tier" "$cmd"
+    done
+
+    echo ""
+    local total
+    total=$(printf '%s\n' "$unique" | awk 'NF>0' | wc -l | tr -d ' ')
+    echo "${C_DIM}${total} match(es) · ${C_RESET}${C_BOLD}reap run${C_RESET}${C_DIM} to kill them, ${C_RESET}${C_BOLD}reap preview${C_RESET}${C_DIM} for grouped view${C_RESET}"
+}
+
+# cmd_doctor — all-in-one health check. Answers "is the reaper actually
+# working?" without digging through launchctl, the log, and the filesystem.
+cmd_doctor() {
+    load_config
+
+    local C_OK="${C_GREEN}✓${C_RESET}"
+    local C_BAD="${C_RED}✗${C_RESET}"
+    local C_WRN="${C_YELLOW}⚠${C_RESET}"
+
+    local bad=0
+    local warn=0
+
+    local reap_bin
+    reap_bin=$(command -v reap 2>/dev/null || echo "${BASH_SOURCE[0]}")
+
+    echo "${C_BOLD}reap doctor${C_RESET}"
+    echo ""
+
+    # 1. reap binary
+    printf "  %s  %-16s ${C_DIM}%s (v%s)${C_RESET}\n" \
+        "$C_OK" "reap binary" "$reap_bin" "$REAP_VERSION"
+
+    # 2. launch agent
+    if launchctl list 2>/dev/null | grep -q "$REAP_LABEL"; then
+        local last_exit
+        last_exit=$(launchctl print "gui/$(id -u)/$REAP_LABEL" 2>/dev/null \
+            | awk -F'=' '/last exit code/ {gsub(/[^0-9-]/,"",$2); print $2; exit}')
+        [ -z "$last_exit" ] && last_exit="?"
+        printf "  %s  %-16s ${C_DIM}loaded, last exit %s${C_RESET}\n" \
+            "$C_OK" "launch agent" "$last_exit"
+    else
+        printf "  %s  %-16s ${C_RED}NOT LOADED${C_RESET} ${C_DIM}— run 'reap install'${C_RESET}\n" \
+            "$C_BAD" "launch agent"
+        bad=$((bad+1))
+    fi
+
+    # 3. plist
+    local plist_path="$HOME/Library/LaunchAgents/$REAP_LABEL.plist"
+    if [ -f "$plist_path" ]; then
+        printf "  %s  %-16s ${C_DIM}%s${C_RESET}\n" \
+            "$C_OK" "plist" "${plist_path/#$HOME/~}"
+    else
+        printf "  %s  %-16s ${C_RED}missing${C_RESET}\n" "$C_BAD" "plist"
+        bad=$((bad+1))
+    fi
+
+    # 4. app bundle
+    local app_exec="$HOME/Applications/Agent Reaper.app/Contents/MacOS/AgentReaper"
+    if [ -x "$app_exec" ]; then
+        printf "  %s  %-16s ${C_DIM}~/Applications/Agent Reaper.app${C_RESET}\n" \
+            "$C_OK" "app bundle"
+    else
+        printf "  %s  %-16s ${C_RED}executable missing${C_RESET}\n" \
+            "$C_BAD" "app bundle"
+        bad=$((bad+1))
+    fi
+
+    # 5. config
+    if [ -f "$CONFIG_FILE" ]; then
+        local a=${#ALWAYS_KILL[@]} o=${#ORPHAN_ONLY[@]} s=${#OLD_PROCESS[@]} h=${#HEAVY_MEMORY[@]}
+        printf "  %s  %-16s ${C_DIM}%d always · %d orphan · %d stale · %d heavy${C_RESET}\n" \
+            "$C_OK" "config" "$a" "$o" "$s" "$h"
+    else
+        printf "  %s  %-16s ${C_RED}missing${C_RESET} ${C_DIM}(%s)${C_RESET}\n" \
+            "$C_BAD" "config" "${CONFIG_FILE/#$HOME/~}"
+        bad=$((bad+1))
+    fi
+
+    # 6. log + last run
+    if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
+        local total_runs clean_runs kill_runs
+        total_runs=$(awk 'END {print NR}' "$LOG_FILE")
+        clean_runs=$(grep -c "Clean run" "$LOG_FILE" 2>/dev/null || true)
+        kill_runs=$(grep -c "=== Reaped" "$LOG_FILE" 2>/dev/null || true)
+        [ -z "$clean_runs" ] && clean_runs=0
+        [ -z "$kill_runs" ] && kill_runs=0
+        printf "  %s  %-16s ${C_DIM}%d entries · %d clean · %d with kills${C_RESET}\n" \
+            "$C_OK" "log" "$total_runs" "$clean_runs" "$kill_runs"
+
+        # Time since last entry.
+        local last_line last_ts
+        last_line=$(tail -n 1 "$LOG_FILE")
+        last_ts=$(printf '%s' "$last_line" | sed -n 's/^\[\([^]]*\)\].*/\1/p')
+        if [ -n "$last_ts" ]; then
+            local last_epoch now_epoch delta human mark
+            last_epoch=$(date -j -f '%Y-%m-%d %H:%M:%S' "$last_ts" +%s 2>/dev/null || echo 0)
+            now_epoch=$(date +%s)
+            delta=$((now_epoch - last_epoch))
+            if   [ "$delta" -lt 0 ];     then human="clock skew"; mark="$C_WRN"; warn=$((warn+1))
+            elif [ "$delta" -lt 60 ];    then human="${delta}s ago"; mark="$C_OK"
+            elif [ "$delta" -lt 3600 ];  then human="$((delta/60))m ago"; mark="$C_OK"
+            elif [ "$delta" -lt 86400 ]; then human="$((delta/3600))h ago"; mark="$C_OK"
+            else                              human="$((delta/86400))d ago"; mark="$C_WRN"; warn=$((warn+1))
+            fi
+            # Warn if it's been much longer than the scheduled interval.
+            if [ "$delta" -gt 3900 ] && [ "$mark" = "$C_OK" ]; then
+                mark="$C_WRN"; warn=$((warn+1))
+            fi
+            printf "  %s  %-16s ${C_DIM}%s (%s)${C_RESET}\n" \
+                "$mark" "last run" "$human" "$last_ts"
+        fi
+    else
+        printf "  %s  %-16s ${C_YELLOW}no runs yet${C_RESET}\n" "$C_WRN" "log"
+        warn=$((warn+1))
+    fi
+
+    echo ""
+    if [ "$bad" -gt 0 ]; then
+        echo "${C_RED}${bad} issue(s) need fixing.${C_RESET} Re-run ${C_BOLD}reap install${C_RESET} to repair the scheduler/app bundle."
+        exit 1
+    elif [ "$warn" -gt 0 ]; then
+        echo "${C_YELLOW}healthy with ${warn} warning(s).${C_RESET}"
+    else
+        echo "${C_GREEN}all systems green.${C_RESET}"
+    fi
 }
 
 cmd_logs() {
@@ -505,7 +721,9 @@ ${C_BOLD}reap${C_RESET} ${C_DIM}v${REAP_VERSION}${C_RESET}: kill zombie processe
 ${C_BOLD}USAGE${C_RESET}
   reap                    Show status and recent activity
   reap preview            Dry-run: show what would be killed
+  reap top                Candidates sorted by memory (nothing killed)
   reap run                Kill zombies now
+  reap doctor             Full health check (scheduler, app bundle, config, log)
   reap stats              Historical totals (this week, month, top targets)
   reap logs [-f]          Tail the log (-f to follow)
   reap config             Open config in \$EDITOR
@@ -532,6 +750,8 @@ main() {
     case "${1:-status}" in
         run)                 shift; cmd_run "$@" ;;
         preview|dry-run)     shift; cmd_preview "$@" ;;
+        top)                 shift; cmd_top "$@" ;;
+        doctor|check)        shift; cmd_doctor "$@" ;;
         logs|log)            shift; cmd_logs "$@" ;;
         stats|history)       shift; cmd_stats "$@" ;;
         config|edit)         shift; cmd_config "$@" ;;
