@@ -72,6 +72,27 @@ HEAVY_MEMORY=(
 HEAVY_MEMORY_MB=2000   # RSS threshold in MB
 
 # =============================================================================
+# HIGH_CPU: patterns killed when sustained %CPU exceeds HIGH_CPU_PCT across
+# two samples taken HIGH_CPU_SAMPLE_SEC apart. Catches background-runaway
+# processes whose parent is still alive — an indexer that won't quit, a
+# "background" agent provider you're not actively using, a Chrome tab in
+# a JS loop. The two-sample average filters out brief bursts (legit active
+# work) while catching sustained runaways (>HIGH_CPU_PCT for 20s+).
+#
+# Note: when this tier has any pattern, every interactive `reap top` /
+# `reap preview` waits HIGH_CPU_SAMPLE_SEC for the second sample.
+# =============================================================================
+HIGH_CPU=(
+    # "/.local/bin/agent"                          # cursor-agent main binary
+    # "/cursor-agent/.*/agent"                     # cursor-agent versioned binary
+    # "/cursor-agent/.*/rg"                        # cursor-agent's bundled ripgrep
+    # "node.*opencode.*serve"                      # opencode serve, when not foregrounded
+    # "Google Chrome Helper.*Renderer"             # Chrome tab stuck in CPU loop
+)
+HIGH_CPU_PCT=85           # %CPU threshold (sustained avg of 2 samples)
+HIGH_CPU_SAMPLE_SEC=20    # gap between samples (interactive runs wait this long)
+
+# =============================================================================
 # Other options
 # =============================================================================
 VERBOSE=0   # 1 = also print to stderr (useful when debugging)
