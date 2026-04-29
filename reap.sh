@@ -19,7 +19,7 @@ set -u
 # =============================================================================
 # CONSTANTS
 # =============================================================================
-readonly REAP_VERSION="0.5.0"
+readonly REAP_VERSION="0.6.0"
 readonly REAP_LABEL="co.tiagor.agent-reaper"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-reaper"
@@ -173,6 +173,16 @@ load_config() {
     HEAVY_MEMORY=()
     HEAVY_MEMORY_MB=2000
 
+    # HIGH_CPU: opt-in tier that kills processes whose %CPU stays above
+    # HIGH_CPU_PCT across two samples taken HIGH_CPU_SAMPLE_SEC apart.
+    # The two-sample average filters out brief bursts (legitimate active
+    # work) while catching sustained runaways (background loops, leaks,
+    # background-indexing agents whose user already moved on). Empty by
+    # default; opt-in. All hard safety still applies.
+    HIGH_CPU=()
+    HIGH_CPU_PCT=85
+    HIGH_CPU_SAMPLE_SEC=20
+
     VERBOSE=0
 
     if [ -f "$CONFIG_FILE" ]; then
@@ -223,6 +233,52 @@ match_heavy() {
         awk -v pat="$pattern" -v kb="$kb" 'NR>1 && $0 ~ pat && $2+0 >= kb {print $1}'
 }
 
+# HIGH_CPU sampling state. Populated by prepare_cpu_samples() so all
+# HIGH_CPU patterns share the same sample data and the wait happens once
+# per run rather than once per pattern.
+CPU_SAMPLE_1=""
+CPU_SAMPLE_2=""
+
+prepare_cpu_samples() {
+    [ ${#HIGH_CPU[@]} -eq 0 ] && return 0
+    [ -n "$CPU_SAMPLE_1" ] && return 0   # already sampled this run
+    CPU_SAMPLE_1=$(mktemp)
+    CPU_SAMPLE_2=$(mktemp)
+    if [ -t 1 ] && [ "${HIGH_CPU_QUIET:-0}" != "1" ]; then
+        printf "%s" "${C_DIM}sampling CPU for HIGH_CPU tier (~${HIGH_CPU_SAMPLE_SEC}s)...${C_RESET} "
+    fi
+    ps -U "$(id -u)" -o pid,%cpu,command > "$CPU_SAMPLE_1"
+    sleep "$HIGH_CPU_SAMPLE_SEC"
+    ps -U "$(id -u)" -o pid,%cpu,command > "$CPU_SAMPLE_2"
+    if [ -t 1 ] && [ "${HIGH_CPU_QUIET:-0}" != "1" ]; then
+        printf "%s\n" "${C_DIM}done${C_RESET}"
+    fi
+}
+
+cleanup_cpu_samples() {
+    [ -n "$CPU_SAMPLE_1" ] && rm -f "$CPU_SAMPLE_1" "$CPU_SAMPLE_2"
+    CPU_SAMPLE_1=""
+    CPU_SAMPLE_2=""
+}
+
+# match_high_cpu: pattern matches AND avg(%CPU) over two samples is at
+# least the threshold. Uses cached samples from prepare_cpu_samples.
+match_high_cpu() {
+    local pattern="$1"
+    local pct="$2"
+    [ -z "$CPU_SAMPLE_1" ] && return 0
+    awk -v pat="$pattern" -v thresh="$pct" '
+        NR == FNR {
+            if (FNR > 1 && $0 ~ pat) cpu1[$1] = $2
+            next
+        }
+        FNR > 1 && $0 ~ pat && ($1 in cpu1) {
+            avg = (cpu1[$1] + $2) / 2
+            if (avg >= thresh) print $1
+        }
+    ' "$CPU_SAMPLE_1" "$CPU_SAMPLE_2"
+}
+
 # =============================================================================
 # CORE: per-rule execution
 # =============================================================================
@@ -254,6 +310,7 @@ process_rule() {
         orphan) pids_raw=$(match_orphan "$pattern") ;;
         stale)  pids_raw=$(match_stale  "$pattern" "$thresh") ;;
         heavy)  pids_raw=$(match_heavy  "$pattern" "$thresh") ;;
+        cpu)    pids_raw=$(match_high_cpu "$pattern" "$thresh") ;;
     esac
 
     local pids
@@ -275,6 +332,7 @@ process_rule() {
         orphan) label="orphan (PPID=1)" ;;
         stale)  label="stale (>${thresh}h)" ;;
         heavy)  label="heavy (>${thresh}MB RSS)" ;;
+        cpu)    label="cpu (>${thresh}% sustained)" ;;
     esac
 
     if [ "$DRY_RUN" = "1" ]; then
@@ -295,11 +353,18 @@ process_rule() {
 }
 
 process_all_rules() {
+    # Take the two CPU samples up-front (cached for the run). No-op if
+    # HIGH_CPU is empty.
+    prepare_cpu_samples
+
     local p
     for p in ${ALWAYS_KILL[@]+"${ALWAYS_KILL[@]}"};   do process_rule always "$p"; done
     for p in ${ORPHAN_ONLY[@]+"${ORPHAN_ONLY[@]}"};   do process_rule orphan "$p"; done
     for p in ${OLD_PROCESS[@]+"${OLD_PROCESS[@]}"};   do process_rule stale  "$p" "$OLD_THRESHOLD_HOURS"; done
     for p in ${HEAVY_MEMORY[@]+"${HEAVY_MEMORY[@]}"}; do process_rule heavy  "$p" "$HEAVY_MEMORY_MB"; done
+    for p in ${HIGH_CPU[@]+"${HIGH_CPU[@]}"};         do process_rule cpu    "$p" "$HIGH_CPU_PCT"; done
+
+    cleanup_cpu_samples
 }
 
 # =============================================================================
@@ -355,8 +420,8 @@ cmd_status() {
         echo "${C_YELLOW}○${C_RESET} not scheduled. Run '${C_BOLD}reap install${C_RESET}'"
     fi
 
-    local a="${#ALWAYS_KILL[@]}" o="${#ORPHAN_ONLY[@]}" s="${#OLD_PROCESS[@]}" h="${#HEAVY_MEMORY[@]}"
-    echo "${C_DIM}  config: $a always · $o orphan · $s stale (>${OLD_THRESHOLD_HOURS}h) · $h heavy (>${HEAVY_MEMORY_MB}MB)${C_RESET}"
+    local a="${#ALWAYS_KILL[@]}" o="${#ORPHAN_ONLY[@]}" s="${#OLD_PROCESS[@]}" h="${#HEAVY_MEMORY[@]}" c="${#HIGH_CPU[@]}"
+    echo "${C_DIM}  config: $a always · $o orphan · $s stale (>${OLD_THRESHOLD_HOURS}h) · $h heavy (>${HEAVY_MEMORY_MB}MB) · $c cpu (>${HIGH_CPU_PCT}%)${C_RESET}"
 
     if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
         echo ""
@@ -391,10 +456,11 @@ cmd_top() {
         is_pattern_safe "$pattern" || return 0
         local pids_raw pids pid tier
         case "$mode" in
-            always) pids_raw=$(match_always "$pattern");          tier="always" ;;
-            orphan) pids_raw=$(match_orphan "$pattern");          tier="orphan" ;;
+            always) pids_raw=$(match_always "$pattern");           tier="always" ;;
+            orphan) pids_raw=$(match_orphan "$pattern");           tier="orphan" ;;
             stale)  pids_raw=$(match_stale  "$pattern" "$thresh"); tier="stale(>${thresh}h)" ;;
             heavy)  pids_raw=$(match_heavy  "$pattern" "$thresh"); tier="heavy(>${thresh}MB)" ;;
+            cpu)    pids_raw=$(match_high_cpu "$pattern" "$thresh"); tier="cpu(>${thresh}%)" ;;
         esac
         pids=$(sanitize_pids "$pids_raw")
         for pid in $pids; do
@@ -402,10 +468,16 @@ cmd_top() {
         done
     }
 
+    # Take CPU samples once if HIGH_CPU has any patterns. No-op otherwise.
+    prepare_cpu_samples
+
     for pattern in ${ALWAYS_KILL[@]+"${ALWAYS_KILL[@]}"};   do add_rows always "$pattern"; done
     for pattern in ${ORPHAN_ONLY[@]+"${ORPHAN_ONLY[@]}"};   do add_rows orphan "$pattern"; done
     for pattern in ${OLD_PROCESS[@]+"${OLD_PROCESS[@]}"};   do add_rows stale  "$pattern" "$OLD_THRESHOLD_HOURS"; done
     for pattern in ${HEAVY_MEMORY[@]+"${HEAVY_MEMORY[@]}"}; do add_rows heavy  "$pattern" "$HEAVY_MEMORY_MB"; done
+    for pattern in ${HIGH_CPU[@]+"${HIGH_CPU[@]}"};         do add_rows cpu    "$pattern" "$HIGH_CPU_PCT"; done
+
+    cleanup_cpu_samples
 
     if [ -z "$rows" ]; then
         echo "${C_GREEN}clean${C_RESET}, no processes match current rules"
@@ -505,9 +577,9 @@ cmd_doctor() {
 
     # 5. config
     if [ -f "$CONFIG_FILE" ]; then
-        local a=${#ALWAYS_KILL[@]} o=${#ORPHAN_ONLY[@]} s=${#OLD_PROCESS[@]} h=${#HEAVY_MEMORY[@]}
-        printf "  %s  %-16s ${C_DIM}%d always · %d orphan · %d stale · %d heavy${C_RESET}\n" \
-            "$C_OK" "config" "$a" "$o" "$s" "$h"
+        local a=${#ALWAYS_KILL[@]} o=${#ORPHAN_ONLY[@]} s=${#OLD_PROCESS[@]} h=${#HEAVY_MEMORY[@]} c=${#HIGH_CPU[@]}
+        printf "  %s  %-16s ${C_DIM}%d always · %d orphan · %d stale · %d heavy · %d cpu${C_RESET}\n" \
+            "$C_OK" "config" "$a" "$o" "$s" "$h" "$c"
     else
         printf "  %s  %-16s ${C_RED}missing${C_RESET} ${C_DIM}(%s)${C_RESET}\n" \
             "$C_BAD" "config" "${CONFIG_FILE/#$HOME/~}"
