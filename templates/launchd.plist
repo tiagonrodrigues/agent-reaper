@@ -15,9 +15,10 @@
         <string>{{APP_EXEC_PATH}}</string>
     </array>
 
-    <!-- Run every 30 minutes (1800 seconds). -->
+    <!-- Sweep interval. install.sh replaces {{INTERVAL_SEC}} with the user's
+         REAP_INTERVAL_SEC (default 600 = 10 min). Sweep takes ~100 ms. -->
     <key>StartInterval</key>
-    <integer>1800</integer>
+    <integer>{{INTERVAL_SEC}}</integer>
 
     <!-- Also run once on login / launchctl load. -->
     <key>RunAtLoad</key>

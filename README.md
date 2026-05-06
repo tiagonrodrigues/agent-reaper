@@ -13,7 +13,7 @@
 [![Homebrew](https://img.shields.io/badge/homebrew-tiagonrodrigues%2Ftap-0A4DFF.svg)](https://github.com/tiagonrodrigues/homebrew-tap)
 [![shellcheck](https://github.com/tiagonrodrigues/agent-reaper/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/tiagonrodrigues/agent-reaper/actions/workflows/shellcheck.yml)
 
-A tiny macOS tool that sweeps away the orphaned `claude`, `cursor-agent`, `codex`, `aider`, Playwright, and MCP-server processes that AI-agent wrappers forget to clean up. Runs every 30 minutes in the background. Safe by default — only touches processes whose parent already died. Optional memory-, CPU-, and duplicate-based tiers for the occasional 5 GB Chrome tab, the agent provider you stopped using but is still burning cores in background, or the 30 leaked MCP-server clones each agent session left behind.
+A tiny macOS tool that sweeps away the orphaned `claude`, `cursor-agent`, `codex`, `aider`, Playwright, and MCP-server processes that AI-agent wrappers forget to clean up. Runs every 10 minutes in the background (configurable). Safe by default — only touches processes whose parent already died. Optional memory-, CPU-, and duplicate-based tiers for the occasional 5 GB Chrome tab, the agent provider you stopped using but is still burning cores in background, or the 30 leaked MCP-server clones each agent session left behind.
 
 > The repo is `agent-reaper`. The CLI you actually type is `reap`. Think of it like `homebrew` the project vs `brew` the command.
 
@@ -37,7 +37,7 @@ Agent wrappers spawn child processes and don't always reap them when you close a
 
 ## The fix
 
-A shell script, a LaunchAgent, and a small CLI. The LaunchAgent runs every 30 minutes and decides what to kill using six tiers:
+A shell script, a LaunchAgent, and a small CLI. The LaunchAgent runs every 10 minutes (configurable via `REAP_INTERVAL_SEC`) and decides what to kill using six tiers:
 
 | Tier | When it kills | Example targets |
 |---|---|---|
@@ -99,7 +99,7 @@ The installer always:
 | `reap` | Status: schedule, config summary, recent activity |
 | `reap preview` | Dry-run grouped by rule. Shows exactly what would be killed (PIDs, age, command). Kills nothing. |
 | `reap top` | Same candidates, flat list sorted by RSS. Good for spotting memory hogs at a glance. |
-| `reap run` | Kill zombies now. Also what the LaunchAgent calls every 30 minutes. |
+| `reap run` | Kill zombies now. Also what the LaunchAgent calls every 10 minutes. |
 | `reap doctor` | Full health check: scheduler loaded, app bundle intact, config sane, last run recent. |
 | `reap stats` | Historical totals: this week, this month, top targets, busiest day. |
 | `reap logs [-f]` | Show recent log entries. Pass `-f` to follow. |
@@ -252,6 +252,7 @@ Good. Run `reap preview` once and inspect what it would do. The worst case is an
 - [x] v0.5 `HEAVY_MEMORY` tier, `reap top`, `reap doctor`
 - [x] v0.6 `HIGH_CPU` tier (sustained-CPU detection for background runaways)
 - [x] v0.7 `DEDUPE` tier (kill duplicate MCP clones from closed agent sessions)
+- [x] v0.8 Default sweep interval lowered 30 min → 10 min, configurable via `REAP_INTERVAL_SEC`
 - [ ] GitHub Actions release automation (tag → tap bump)
 - [ ] Linux support via `systemd --user` ([#1](https://github.com/tiagonrodrigues/agent-reaper/issues/1))
 - [ ] Patterns for more agent CLIs (Gemini, Replit Agent, etc.)
