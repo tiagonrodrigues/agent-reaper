@@ -114,6 +114,16 @@ DEDUPE=(
 DEDUPE_KEEP=3
 
 # =============================================================================
+# Sweep interval (seconds). Default 600 (10 min). Lower = faster cleanup
+# of leaks, slightly more CPU on the sweep itself (~100 ms × 144 sweeps/day
+# at 600s = ~14 s/day total). Raise to 1800 for 30-min sweeps if you prefer
+# less noise.
+#
+# Take effect: edit, then run `reap install` to regenerate the LaunchAgent.
+# =============================================================================
+REAP_INTERVAL_SEC=600
+
+# =============================================================================
 # Other options
 # =============================================================================
 VERBOSE=0   # 1 = also print to stderr (useful when debugging)

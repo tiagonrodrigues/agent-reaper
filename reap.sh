@@ -19,7 +19,7 @@ set -u
 # =============================================================================
 # CONSTANTS
 # =============================================================================
-readonly REAP_VERSION="0.7.0"
+readonly REAP_VERSION="0.8.0"
 readonly REAP_LABEL="co.tiagor.agent-reaper"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-reaper"
@@ -195,6 +195,11 @@ load_config() {
     # pattern). All other safety guards still apply.
     DEDUPE=()
     DEDUPE_KEEP=3
+
+    # Sweep interval (seconds). install.sh substitutes this into the
+    # LaunchAgent plist on `reap install`. Default 600 (10 min) for
+    # protective coverage; raise if you want fewer runs.
+    REAP_INTERVAL_SEC=600
 
     VERBOSE=0
 
@@ -454,7 +459,8 @@ cmd_status() {
     echo ""
 
     if launchctl list 2>/dev/null | grep -q "$REAP_LABEL"; then
-        echo "${C_GREEN}●${C_RESET} scheduled    every 30 minutes via launchd"
+        local interval_min=$((REAP_INTERVAL_SEC / 60))
+        echo "${C_GREEN}●${C_RESET} scheduled    every ${interval_min} minutes via launchd"
     else
         echo "${C_YELLOW}○${C_RESET} not scheduled. Run '${C_BOLD}reap install${C_RESET}'"
     fi

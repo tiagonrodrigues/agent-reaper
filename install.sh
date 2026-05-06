@@ -15,7 +15,10 @@
 set -euo pipefail
 
 readonly REPO_RAW="https://raw.githubusercontent.com/tiagonrodrigues/agent-reaper/main"
-readonly VERSION="0.7.0"
+readonly VERSION="0.8.0"
+# Default sweep interval (seconds). Can be overridden by REAP_INTERVAL_SEC
+# in the user's config or via the environment.
+readonly DEFAULT_INTERVAL_SEC="600"
 readonly LABEL="co.tiagor.agent-reaper"
 
 readonly LOCAL_BIN_DIR="$HOME/.local/bin"
@@ -129,13 +132,25 @@ fi
 
 echo "  Agent Reaper.app built at $APP_DIR"
 
+# --- Resolve sweep interval (config > env > default) -----------------------
+# Source the user's config (if it exists) just to read REAP_INTERVAL_SEC.
+# We do this in a subshell so other vars from the config don't leak in here.
+INTERVAL_SEC="$DEFAULT_INTERVAL_SEC"
+if [ -f "$CONFIG_DIR/config.sh" ]; then
+    cfg_val=$(bash -c "source '$CONFIG_DIR/config.sh' 2>/dev/null; echo \"\${REAP_INTERVAL_SEC:-}\"")
+    [ -n "$cfg_val" ] && INTERVAL_SEC="$cfg_val"
+fi
+# Env var overrides config.
+[ -n "${REAP_INTERVAL_SEC:-}" ] && INTERVAL_SEC="$REAP_INTERVAL_SEC"
+
 # --- Render LaunchAgent plist ----------------------------------------------
 sed \
     -e "s|{{LABEL}}|$LABEL|g" \
     -e "s|{{APP_EXEC_PATH}}|$APP_EXEC_PATH|g" \
     -e "s|{{LOG_DIR}}|$LOG_DIR|g" \
+    -e "s|{{INTERVAL_SEC}}|$INTERVAL_SEC|g" \
     "$PLIST_TEMPLATE" > "$PLIST_PATH"
-echo "  LaunchAgent written to $PLIST_PATH"
+echo "  LaunchAgent written to $PLIST_PATH (sweep every ${INTERVAL_SEC}s)"
 
 # --- Seed config if missing -------------------------------------------------
 if [ ! -f "$CONFIG_DIR/config.sh" ]; then
