@@ -19,7 +19,7 @@ set -u
 # =============================================================================
 # CONSTANTS
 # =============================================================================
-readonly REAP_VERSION="0.6.0"
+readonly REAP_VERSION="0.7.0"
 readonly REAP_LABEL="co.tiagor.agent-reaper"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-reaper"
@@ -183,6 +183,19 @@ load_config() {
     HIGH_CPU_PCT=85
     HIGH_CPU_SAMPLE_SEC=20
 
+    # DEDUPE: opt-in tier that keeps only the N newest instances of each
+    # pattern, killing the rest. Built for the MCP-server-hoarding case:
+    # every claude/cursor-agent/codex session spawns its own MCPs (posthog,
+    # shadcn, @modelcontextprotocol/server-*); when the session dies they
+    # often persist parented to a long-lived npx wrapper, so PPID=1
+    # detection misses them. They idle at 0% CPU with low RAM each, but
+    # accumulate to hundreds of MB across dozens of leaked instances.
+    #
+    # Empty by default. DEDUPE_KEEP must be >= 1 (safety: never zero a
+    # pattern). All other safety guards still apply.
+    DEDUPE=()
+    DEDUPE_KEEP=3
+
     VERBOSE=0
 
     if [ -f "$CONFIG_FILE" ]; then
@@ -279,6 +292,29 @@ match_high_cpu() {
     ' "$CPU_SAMPLE_1" "$CPU_SAMPLE_2"
 }
 
+# match_dedupe: list matching PIDs sorted by age (newest first), keep
+# `keep` newest, return the rest as kill candidates. Solves duplicate-
+# accumulation when something keeps spawning fresh instances of the
+# same process and forgetting to clean up the old ones (looking at you,
+# every MCP server pattern across every agent CLI).
+match_dedupe() {
+    local pattern="$1"
+    local keep="$2"
+    [ "$keep" -lt 1 ] 2>/dev/null && keep=1   # safety: never zero a pattern
+    ps -U "$(id -u)" -o pid,etime,command 2>/dev/null | \
+        awk -v pat="$pattern" '
+            NR > 1 && $0 ~ pat {
+                n = split($2, t, "-")
+                if (n == 2) { d = t[1]; rest = t[2] } else { d = 0; rest = t[1] }
+                split(rest, hms, ":")
+                if (length(hms) == 3) secs = hms[1]*3600 + hms[2]*60 + hms[3]
+                else if (length(hms) == 2) secs = hms[1]*60 + hms[2]
+                else secs = hms[1]
+                printf "%d %s\n", d*86400 + secs, $1
+            }
+        ' | sort -n | tail -n +"$((keep + 1))" | awk '{print $2}'
+}
+
 # =============================================================================
 # CORE: per-rule execution
 # =============================================================================
@@ -311,6 +347,7 @@ process_rule() {
         stale)  pids_raw=$(match_stale  "$pattern" "$thresh") ;;
         heavy)  pids_raw=$(match_heavy  "$pattern" "$thresh") ;;
         cpu)    pids_raw=$(match_high_cpu "$pattern" "$thresh") ;;
+        dedupe) pids_raw=$(match_dedupe "$pattern" "$thresh") ;;
     esac
 
     local pids
@@ -333,6 +370,7 @@ process_rule() {
         stale)  label="stale (>${thresh}h)" ;;
         heavy)  label="heavy (>${thresh}MB RSS)" ;;
         cpu)    label="cpu (>${thresh}% sustained)" ;;
+        dedupe) label="dedupe (keep ${thresh} newest)" ;;
     esac
 
     if [ "$DRY_RUN" = "1" ]; then
@@ -363,6 +401,7 @@ process_all_rules() {
     for p in ${OLD_PROCESS[@]+"${OLD_PROCESS[@]}"};   do process_rule stale  "$p" "$OLD_THRESHOLD_HOURS"; done
     for p in ${HEAVY_MEMORY[@]+"${HEAVY_MEMORY[@]}"}; do process_rule heavy  "$p" "$HEAVY_MEMORY_MB"; done
     for p in ${HIGH_CPU[@]+"${HIGH_CPU[@]}"};         do process_rule cpu    "$p" "$HIGH_CPU_PCT"; done
+    for p in ${DEDUPE[@]+"${DEDUPE[@]}"};             do process_rule dedupe "$p" "$DEDUPE_KEEP"; done
 
     cleanup_cpu_samples
 }
@@ -420,8 +459,8 @@ cmd_status() {
         echo "${C_YELLOW}○${C_RESET} not scheduled. Run '${C_BOLD}reap install${C_RESET}'"
     fi
 
-    local a="${#ALWAYS_KILL[@]}" o="${#ORPHAN_ONLY[@]}" s="${#OLD_PROCESS[@]}" h="${#HEAVY_MEMORY[@]}" c="${#HIGH_CPU[@]}"
-    echo "${C_DIM}  config: $a always · $o orphan · $s stale (>${OLD_THRESHOLD_HOURS}h) · $h heavy (>${HEAVY_MEMORY_MB}MB) · $c cpu (>${HIGH_CPU_PCT}%)${C_RESET}"
+    local a="${#ALWAYS_KILL[@]}" o="${#ORPHAN_ONLY[@]}" s="${#OLD_PROCESS[@]}" h="${#HEAVY_MEMORY[@]}" c="${#HIGH_CPU[@]}" d="${#DEDUPE[@]}"
+    echo "${C_DIM}  config: $a always · $o orphan · $s stale (>${OLD_THRESHOLD_HOURS}h) · $h heavy (>${HEAVY_MEMORY_MB}MB) · $c cpu (>${HIGH_CPU_PCT}%) · $d dedupe (keep ${DEDUPE_KEEP})${C_RESET}"
 
     if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
         echo ""
@@ -456,11 +495,12 @@ cmd_top() {
         is_pattern_safe "$pattern" || return 0
         local pids_raw pids pid tier
         case "$mode" in
-            always) pids_raw=$(match_always "$pattern");           tier="always" ;;
-            orphan) pids_raw=$(match_orphan "$pattern");           tier="orphan" ;;
-            stale)  pids_raw=$(match_stale  "$pattern" "$thresh"); tier="stale(>${thresh}h)" ;;
-            heavy)  pids_raw=$(match_heavy  "$pattern" "$thresh"); tier="heavy(>${thresh}MB)" ;;
+            always) pids_raw=$(match_always "$pattern");             tier="always" ;;
+            orphan) pids_raw=$(match_orphan "$pattern");             tier="orphan" ;;
+            stale)  pids_raw=$(match_stale  "$pattern" "$thresh");   tier="stale(>${thresh}h)" ;;
+            heavy)  pids_raw=$(match_heavy  "$pattern" "$thresh");   tier="heavy(>${thresh}MB)" ;;
             cpu)    pids_raw=$(match_high_cpu "$pattern" "$thresh"); tier="cpu(>${thresh}%)" ;;
+            dedupe) pids_raw=$(match_dedupe "$pattern" "$thresh");   tier="dedupe(keep ${thresh})" ;;
         esac
         pids=$(sanitize_pids "$pids_raw")
         for pid in $pids; do
@@ -476,6 +516,7 @@ cmd_top() {
     for pattern in ${OLD_PROCESS[@]+"${OLD_PROCESS[@]}"};   do add_rows stale  "$pattern" "$OLD_THRESHOLD_HOURS"; done
     for pattern in ${HEAVY_MEMORY[@]+"${HEAVY_MEMORY[@]}"}; do add_rows heavy  "$pattern" "$HEAVY_MEMORY_MB"; done
     for pattern in ${HIGH_CPU[@]+"${HIGH_CPU[@]}"};         do add_rows cpu    "$pattern" "$HIGH_CPU_PCT"; done
+    for pattern in ${DEDUPE[@]+"${DEDUPE[@]}"};             do add_rows dedupe "$pattern" "$DEDUPE_KEEP"; done
 
     cleanup_cpu_samples
 
@@ -577,9 +618,9 @@ cmd_doctor() {
 
     # 5. config
     if [ -f "$CONFIG_FILE" ]; then
-        local a=${#ALWAYS_KILL[@]} o=${#ORPHAN_ONLY[@]} s=${#OLD_PROCESS[@]} h=${#HEAVY_MEMORY[@]} c=${#HIGH_CPU[@]}
-        printf "  %s  %-16s ${C_DIM}%d always · %d orphan · %d stale · %d heavy · %d cpu${C_RESET}\n" \
-            "$C_OK" "config" "$a" "$o" "$s" "$h" "$c"
+        local a=${#ALWAYS_KILL[@]} o=${#ORPHAN_ONLY[@]} s=${#OLD_PROCESS[@]} h=${#HEAVY_MEMORY[@]} c=${#HIGH_CPU[@]} d=${#DEDUPE[@]}
+        printf "  %s  %-16s ${C_DIM}%d always · %d orphan · %d stale · %d heavy · %d cpu · %d dedupe${C_RESET}\n" \
+            "$C_OK" "config" "$a" "$o" "$s" "$h" "$c" "$d"
     else
         printf "  %s  %-16s ${C_RED}missing${C_RESET} ${C_DIM}(%s)${C_RESET}\n" \
             "$C_BAD" "config" "${CONFIG_FILE/#$HOME/~}"

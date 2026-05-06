@@ -93,6 +93,27 @@ HIGH_CPU_PCT=85           # %CPU threshold (sustained avg of 2 samples)
 HIGH_CPU_SAMPLE_SEC=20    # gap between samples (interactive runs wait this long)
 
 # =============================================================================
+# DEDUPE: keep only the N newest instances of each pattern, kill older
+# duplicates. Designed for MCP-server hoarding — every claude / cursor-agent
+# / codex session spawns its own MCP clients (posthog, shadcn,
+# @modelcontextprotocol/server-*); when the session ends they often persist
+# parented to a long-lived npx wrapper, so PPID=1 detection misses them.
+# Each idle MCP is small (~5-100 MB) but accumulating dozens easily eats
+# 500MB+ of RAM with zero benefit.
+#
+# DEDUPE_KEEP must be >= 1 (safety: never zero a pattern).
+# Raise it if you legitimately keep many concurrent agent sessions of the
+# same kind alive (e.g., 5 claude terminals across 5 projects → KEEP=5).
+# =============================================================================
+DEDUPE=(
+    # "mcp-remote"                                  # any MCP fetched via mcp-remote
+    # "shadcn mcp"                                  # shadcn MCP server
+    # "@modelcontextprotocol/server-"               # official MCP servers
+    # "node.*mcp-server-"                           # third-party MCP servers
+)
+DEDUPE_KEEP=3
+
+# =============================================================================
 # Other options
 # =============================================================================
 VERBOSE=0   # 1 = also print to stderr (useful when debugging)

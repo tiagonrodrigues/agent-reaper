@@ -13,7 +13,7 @@
 [![Homebrew](https://img.shields.io/badge/homebrew-tiagonrodrigues%2Ftap-0A4DFF.svg)](https://github.com/tiagonrodrigues/homebrew-tap)
 [![shellcheck](https://github.com/tiagonrodrigues/agent-reaper/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/tiagonrodrigues/agent-reaper/actions/workflows/shellcheck.yml)
 
-A tiny macOS tool that sweeps away the orphaned `claude`, `cursor-agent`, `codex`, `aider`, Playwright, and MCP-server processes that AI-agent wrappers forget to clean up. Runs every 30 minutes in the background. Safe by default — only touches processes whose parent already died. Optional memory- and CPU-based tiers for the occasional 5 GB Chrome tab or the agent provider you stopped using but is still burning cores in background.
+A tiny macOS tool that sweeps away the orphaned `claude`, `cursor-agent`, `codex`, `aider`, Playwright, and MCP-server processes that AI-agent wrappers forget to clean up. Runs every 30 minutes in the background. Safe by default — only touches processes whose parent already died. Optional memory-, CPU-, and duplicate-based tiers for the occasional 5 GB Chrome tab, the agent provider you stopped using but is still burning cores in background, or the 30 leaked MCP-server clones each agent session left behind.
 
 > The repo is `agent-reaper`. The CLI you actually type is `reap`. Think of it like `homebrew` the project vs `brew` the command.
 
@@ -37,7 +37,7 @@ Agent wrappers spawn child processes and don't always reap them when you close a
 
 ## The fix
 
-A shell script, a LaunchAgent, and a small CLI. The LaunchAgent runs every 30 minutes and decides what to kill using five tiers:
+A shell script, a LaunchAgent, and a small CLI. The LaunchAgent runs every 30 minutes and decides what to kill using six tiers:
 
 | Tier | When it kills | Example targets |
 |---|---|---|
@@ -46,12 +46,15 @@ A shell script, a LaunchAgent, and a small CLI. The LaunchAgent runs every 30 mi
 | `OLD_PROCESS` | Only if older than N hours | `playwright chromium`, `chrome-headless-shell`, `puppeteer` |
 | `HEAVY_MEMORY` | Only if RSS > N MB (opt-in) | runaway Chrome tabs, bloated `node opencode serve` |
 | `HIGH_CPU` | Only if sustained %CPU > N over two samples (opt-in) | the agent provider you stopped using that's still indexing in background |
+| `DEDUPE` | Keep N newest, kill older duplicates of the same pattern (opt-in) | the 30 leaked MCP-server clones each closed agent session left behind |
 
 The `ORPHAN_ONLY` tier is the important one for the default case. Active sessions always have their IDE or terminal as parent, so they're never candidates. Only the processes whose wrapper already died get reaped. Zero false positives in practice.
 
-`HEAVY_MEMORY` and `HIGH_CPU` are opt-in because they *can* touch processes whose parent is still alive — that's the point. One Chrome tab stuck in a JS loop eating 2 GB gets reaped before it drags your Mac into swap hell. A `cursor-agent` provider that's burning 100 % CPU on background indexing while you're not using it gets reaped before your fan takes off. Empty by default, patterns must be added explicitly, and all the other safety guards still apply.
+The opt-in tiers (`HEAVY_MEMORY`, `HIGH_CPU`, `DEDUPE`) *can* touch processes whose parent is still alive — that's the point. One Chrome tab stuck in a JS loop eating 2 GB gets reaped before it drags your Mac into swap hell. A `cursor-agent` provider that's burning 100 % CPU on background indexing gets reaped before your fan takes off. The 17 leaked `mcp-remote` clones from sessions you closed days ago get culled to the 3 newest. Empty by default, patterns must be added explicitly, and all the other safety guards still apply.
 
 The CPU tier takes two samples 20 seconds apart and only fires on the average. Bursty active work (a real `rg` search you triggered, an inference call) doesn't sustain across 20 seconds. A leaked background loop does.
+
+The dedupe tier sorts matching processes by start time and keeps the N newest. If you legitimately keep 5 active claude sessions across 5 projects, set `DEDUPE_KEEP=5`. The default of 3 is a safe assumption for typical workflows.
 
 ## Install
 
@@ -183,6 +186,17 @@ HIGH_CPU=(
 )
 HIGH_CPU_PCT=85
 HIGH_CPU_SAMPLE_SEC=20
+
+# Opt-in: keep only the N newest instances of each pattern, kill older
+# duplicates. Built for MCP-server hoarding — every closed agent session
+# tends to leak its MCP clients.
+DEDUPE=(
+    # "mcp-remote"                       # any mcp-remote-fetched MCP
+    # "shadcn mcp"
+    # "@modelcontextprotocol/server-"
+    # "node.*mcp-server-"
+)
+DEDUPE_KEEP=3
 ```
 
 ## Safety
@@ -237,6 +251,7 @@ Good. Run `reap preview` once and inspect what it would do. The worst case is an
 - [x] v0.4.1 Homebrew tap: `brew install tiagonrodrigues/tap/agent-reaper`
 - [x] v0.5 `HEAVY_MEMORY` tier, `reap top`, `reap doctor`
 - [x] v0.6 `HIGH_CPU` tier (sustained-CPU detection for background runaways)
+- [x] v0.7 `DEDUPE` tier (kill duplicate MCP clones from closed agent sessions)
 - [ ] GitHub Actions release automation (tag → tap bump)
 - [ ] Linux support via `systemd --user` ([#1](https://github.com/tiagonrodrigues/agent-reaper/issues/1))
 - [ ] Patterns for more agent CLIs (Gemini, Replit Agent, etc.)
