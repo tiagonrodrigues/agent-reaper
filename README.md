@@ -13,7 +13,7 @@
 [![Homebrew](https://img.shields.io/badge/homebrew-tiagonrodrigues%2Ftap-0A4DFF.svg)](https://github.com/tiagonrodrigues/homebrew-tap)
 [![shellcheck](https://github.com/tiagonrodrigues/agent-reaper/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/tiagonrodrigues/agent-reaper/actions/workflows/shellcheck.yml)
 
-A tiny macOS tool that sweeps away the orphaned `claude`, `cursor-agent`, `codex`, `aider`, Playwright, and MCP-server processes that AI-agent wrappers forget to clean up. Runs every 10 minutes in the background (configurable). Safe by default — only touches processes whose parent already died. Optional memory-, CPU-, and duplicate-based tiers for the occasional 5 GB Chrome tab, the agent provider you stopped using but is still burning cores in background, or the 30 leaked MCP-server clones each agent session left behind.
+A tiny macOS tool that sweeps away abandoned Oh My Pi, `claude`, `cursor-agent`, `codex`, `aider`, Playwright, agent-browser, and MCP-server processes. Runs every 10 minutes in the background (configurable). A match is killable only after it has no live terminal owner and remains detached across repeated scans. Interactive browsers are hard-protected.
 
 > The repo is `agent-reaper`. The CLI you actually type is `reap`. Think of it like `homebrew` the project vs `brew` the command.
 
@@ -37,24 +37,22 @@ Agent wrappers spawn child processes and don't always reap them when you close a
 
 ## The fix
 
-A shell script, a LaunchAgent, and a small CLI. The LaunchAgent runs every 10 minutes (configurable via `REAP_INTERVAL_SEC`) and decides what to kill using six tiers:
+A shell script, a LaunchAgent, and a small CLI. The LaunchAgent runs every 10 minutes (configurable via `REAP_INTERVAL_SEC`) and evaluates six rule tiers:
 
-| Tier | When it kills | Example targets |
+| Tier | Candidate condition | Example targets |
 |---|---|---|
-| `ALWAYS_KILL` | Every run, unconditionally | Tools you never use that keep spawning |
-| `ORPHAN_ONLY` | Only if `PPID=1` (parent died) | `claude`, `cursor-agent`, `codex`, `aider`, MCP servers |
-| `OLD_PROCESS` | Only if older than N hours | `playwright chromium`, `chrome-headless-shell`, `puppeteer` |
-| `HEAVY_MEMORY` | Only if RSS > N MB (opt-in) | runaway Chrome tabs, bloated `node opencode serve` |
-| `HIGH_CPU` | Only if sustained %CPU > N over two samples (opt-in) | the agent provider you stopped using that's still indexing in background |
-| `DEDUPE` | Keep N newest, kill older duplicates of the same pattern (opt-in) | the 30 leaked MCP-server clones each closed agent session left behind |
+| `ALWAYS_KILL` | Pattern match with no active owner | Tools you never use that keep spawning |
+| `ORPHAN_ONLY` | `PPID=1` | orphaned agent CLIs and MCP hosts |
+| `OLD_PROCESS` | Older than N hours | Playwright, agent-browser daemons, detached MCP servers |
+| `HEAVY_MEMORY` | RSS > N MB (opt-in) | detached agent or renderer leaks |
+| `HIGH_CPU` | Sustained %CPU > N over two samples (opt-in) | detached providers stuck in loops |
+| `DEDUPE` | Older duplicate beyond the N newest (opt-in) | leaked MCP-server clones |
 
-The `ORPHAN_ONLY` tier is the important one for the default case. Active sessions always have their IDE or terminal as parent, so they're never candidates. Only the processes whose wrapper already died get reaped. Zero false positives in practice.
+Every tier then passes through the same ownership classifier. A process is protected if it belongs to a live terminal tree, is an interactive browser, has a live agent-browser child, matches the system/shell blocklist, or is still inside the detached-candidate quarantine. Resource thresholds alone are never treated as proof that a process is abandoned.
 
-The opt-in tiers (`HEAVY_MEMORY`, `HIGH_CPU`, `DEDUPE`) *can* touch processes whose parent is still alive — that's the point. One Chrome tab stuck in a JS loop eating 2 GB gets reaped before it drags your Mac into swap hell. A `cursor-agent` provider that's burning 100 % CPU on background indexing gets reaped before your fan takes off. The 17 leaked `mcp-remote` clones from sessions you closed days ago get culled to the 3 newest. Empty by default, patterns must be added explicitly, and all the other safety guards still apply.
+Detached candidates are persisted in `~/.local/share/agent-reaper/detached-candidates.tsv`. They must remain detached across scheduled scans for `DETACHED_GRACE_MINUTES` before termination. If a candidate becomes active or stops matching, its observation state is discarded.
 
-The CPU tier takes two samples 20 seconds apart and only fires on the average. Bursty active work (a real `rg` search you triggered, an inference call) doesn't sustain across 20 seconds. A leaked background loop does.
-
-The dedupe tier sorts matching processes by start time and keeps the N newest. If you legitimately keep 5 active claude sessions across 5 projects, set `DEDUPE_KEEP=5`. The default of 3 is a safe assumption for typical workflows.
+Termination uses `SIGTERM`, waits `TERM_GRACE_SEC`, and escalates only surviving processes to `SIGKILL`.
 
 ## Install
 
@@ -97,9 +95,9 @@ The installer always:
 | Command | What it does |
 |---|---|
 | `reap` | Status: schedule, config summary, recent activity |
-| `reap preview` | Dry-run grouped by rule. Shows exactly what would be killed (PIDs, age, command). Kills nothing. |
-| `reap top` | Same candidates, flat list sorted by RSS. Good for spotting memory hogs at a glance. |
-| `reap run` | Kill zombies now. Also what the LaunchAgent calls every 10 minutes. |
+| `reap preview` | Dry-run grouped by rule. Explains kill-ready, quarantined, and protected PIDs. Kills nothing. |
+| `reap top` | Kill-ready candidates sorted by RSS; protected and quarantined matches are explained. |
+| `reap run` | Classify matches, advance quarantine state, and terminate kill-ready processes. Also what the LaunchAgent calls. |
 | `reap doctor` | Full health check: scheduler loaded, app bundle intact, config sane, last run recent. |
 | `reap stats` | Historical totals: this week, this month, top targets, busiest day. |
 | `reap logs [-f]` | Show recent log entries. Pass `-f` to follow. |
@@ -109,21 +107,16 @@ The installer always:
 
 ## Preview before you reap
 
-Always free to check what would happen without touching anything:
+Check both the candidates and the reasons matches are being spared:
 
 ```
 $ reap preview
 reap preview (dry-run, nothing will be killed)
+  protected   PID 81434  owned by live terminal ttys000
+  protected   PID 45937  interactive browser; calls, tabs, and screen sharing are protected
+  quarantine  PID 91587  new detached candidate; requires 15m continuous observation
 
-would kill 3 process(es), orphan (PPID=1): claude --output-format stream-json
-    PID 14086   06:51         claude --output-format stream-json --verbose ...
-    PID 79739   02:14         claude --output-format stream-json --verbose ...
-    PID 67833   10:20         claude --output-format stream-json --verbose ...
-
-would kill 1 process(es), stale (>2h): ms-playwright/chromium
-    PID 16987   1-22:15:32    chrome-headless-shell --disable-field-trial-config ...
-
-would reap 4 process(es)  (run 'reap run' to do it)
+no kill-ready processes  1 quarantined · 2 protected
 ```
 
 ## Stats
@@ -154,6 +147,8 @@ ORPHAN_ONLY=(
     "cursor-agent.*stream"
     "codex.*--output-format"
     "aider.*--stream"
+    "bun .*/\\.bun/bin/omp"                 # Oh My Pi
+    "__omp_worker_"                         # OMP eval/browser workers
     "node.*mcp-server-"                       # MCP servers (3rd party)
     "node.*@modelcontextprotocol/server-"     # MCP servers (official)
     "my-custom-agent --daemon"                # your own
@@ -163,26 +158,30 @@ OLD_PROCESS=(
     "ms-playwright/chromium"
     "puppeteer.*chromium"
     "chrome-headless-shell"
+    "agent-browser/bin/agent-browser-"
+    "bun .*/\\.bun/bin/omp"
+    "__omp_worker_"
 )
 OLD_THRESHOLD_HOURS=2
 
-# Opt-in: kill processes whose RSS exceeds the threshold, even when
-# their parent is alive. Empty by default. Use `reap top` to see
-# what would match before enabling.
+# Opt-in: consider detached matching processes whose RSS exceeds the threshold.
+# Live terminal trees and interactive browsers remain protected.
 HEAVY_MEMORY=(
-    # "Google Chrome Helper"     # any Chrome renderer tab >2GB
-    # "node.*opencode"           # opencode serve leaks
+    # "node.*opencode"
+    # "bun .*/\\.bun/bin/omp"
+    # "__omp_worker_"
+    # "electron.*--renderer"
 )
 HEAVY_MEMORY_MB=2000
 
-# Opt-in: kill processes whose sustained %CPU (averaged over two
-# samples 20s apart) exceeds the threshold. Catches background
-# runaways without touching short bursts of legit active work.
+# Opt-in: consider detached matching processes whose sustained %CPU
+# (averaged over two samples) exceeds the threshold.
 HIGH_CPU=(
-    # "/.local/bin/agent"                # cursor-agent (T3 Code provider)
-    # "/cursor-agent/.*/rg"              # cursor-agent's bundled ripgrep
-    # "node.*opencode.*serve"            # opencode serve background
-    # "Google Chrome Helper.*Renderer"   # Chrome tab in CPU loop
+    # "/.local/bin/agent"
+    # "/cursor-agent/.*/rg"
+    # "node.*opencode.*serve"
+    # "bun .*/\\.bun/bin/omp"
+    # "__omp_worker_"
 )
 HIGH_CPU_PCT=85
 HIGH_CPU_SAMPLE_SEC=20
@@ -197,28 +196,40 @@ DEDUPE=(
     # "node.*mcp-server-"
 )
 DEDUPE_KEEP=3
+
+# Require repeated detached observations before termination.
+DETACHED_GRACE_MINUTES=15
+
+# Graceful shutdown window before SIGKILL fallback.
+TERM_GRACE_SEC=3
 ```
 
 ## Safety
 
-Hardcoded defenses. Not configurable. They always apply:
+Hardcoded defenses. Not configurable. They apply to every rule tier:
 
 - **Never runs as root.** Exits immediately if invoked with `EUID=0`.
 - **UID-scoped.** Only processes owned by the invoking user are considered.
-- **Hard blocklist.** Even if a user pattern matched them, reap refuses to kill `launchd`, `kernel_task`, `WindowServer`, `loginwindow`, `Finder`, `Dock`, `SystemUIServer`, `sshd`, login shells, anything under `/System/Library`, or reap itself.
-- **Pattern sanity.** Rejects empty patterns, `*`, `.*`, or anything shorter than 4 characters.
-- **Max-kill cap.** If a single rule matches more than 50 processes, the rule is aborted and logged. Something is almost certainly wrong, review manually.
-- **Dry-run first.** `reap preview` shows you everything before you commit to any kills.
+- **Live terminal ownership.** A PID is protected when it or any living ancestor owns a TTY. Active OMP/Codex sessions therefore protect their MCPs, workers, and automation browsers.
+- **Interactive browser blocklist.** Chrome, Safari, Firefox, Brave, Edge, Arc, and Dia app processes are never killed. Google Meet, screen sharing, tabs, and renderer spikes stay untouched.
+- **Repeated detached observations.** A new detached match enters quarantine instead of being killed. It must remain detached for `DETACHED_GRACE_MINUTES` across scheduled scans.
+- **Active agent-browser sessions.** Daemons with live browser children are protected.
+- **System and shell blocklist.** Reap refuses to kill `launchd`, `kernel_task`, `WindowServer`, login shells, system services, or itself.
+- **Pattern sanity and max-kill cap.** Unsafe patterns are rejected; a rule matching more than 50 PIDs is aborted.
+- **Graceful termination.** `SIGTERM` comes first. `SIGKILL` is only a bounded fallback.
+- **Explainable dry-run.** `reap preview` states why each matching PID is kill-ready, quarantined, or protected.
 
 ## How it works
 
-**The PPID=1 trick.** On Unix, when a process's parent dies, the kernel re-parents the child to `launchd` (PID 1). A `claude` CLI whose T3 Code session died will have `PPID=1`. An active one has the IDE's helper process as parent. Perfect discriminator, zero false positives in practice.
+**Ownership, not resource usage.** PPID, parent chains, and TTY ownership distinguish active terminal work from detached process trees. CPU, RSS, age, and duplication decide which detached processes deserve inspection; they never override live ownership or the interactive-browser blocklist.
+
+**Persistent quarantine.** A detached candidate signature and first-seen time survive between LaunchAgent sweeps. Reattachment or a non-match clears the record. This avoids killing a process during the transition between an active session and a genuinely abandoned tree.
 
 **LaunchAgent, not cron.** macOS deprecated cron. `launchd` respects laptop sleep/wake, handles missed runs on resume, and doesn't need a login shell.
 
 **A real .app bundle.** The LaunchAgent invokes `~/Applications/Agent Reaper.app/Contents/MacOS/AgentReaper` rather than a raw shell script. macOS reads the bundle's `Info.plist` to attribute the process, so Login Items, Activity Monitor, and the security pane show **Agent Reaper** with a proper identity. The bundle is ad-hoc signed at install time (`codesign -fs -`). Background-only, so no Dock icon and no app-switcher entry.
 
-**Performance.** Runs with `Nice=10` and `LowPriorityIO=true`. Takes under 100ms on an M-series Mac.
+**Performance.** Base sweeps run with `Nice=10` and `LowPriorityIO=true`. The opt-in CPU tier deliberately waits `HIGH_CPU_SAMPLE_SEC` for its second sample.
 
 ## Uninstall
 
@@ -229,20 +240,23 @@ reap uninstall --purge      # remove everything
 
 ## FAQ
 
-**Will this kill my active Claude Code or Cursor session?**
-No. Active sessions have their IDE as parent (`PPID ≠ 1`), so they never match the `ORPHAN_ONLY` rule. The only way an agent ends up in its crosshairs is if its parent already died, at which point it's genuinely orphaned.
+**Will this kill my active OMP, Claude Code, Cursor, or Codex session?**
+No. A live terminal anywhere in the PID's ancestor chain protects the complete tree, including MCP servers and automation browsers.
 
-**What about MCP servers? I use a bunch.**
-MCP servers that are actively in use have your IDE (Claude Code, Cursor, etc.) as parent, so they're never reaped. The patterns in `ORPHAN_ONLY` only fire when the IDE that spawned them is already gone.
+**Will it kill Chrome during Google Meet?**
+No. Interactive browser app processes and helpers are hard-blocked from every tier, regardless of CPU or memory usage.
 
-**What if I actually use opencode (or anything else in `ALWAYS_KILL`)?**
-Remove it from `ALWAYS_KILL` in your config, or move the pattern into `ORPHAN_ONLY` to use the safer rule.
+**What about leaked MCP servers whose wrapper is still alive?**
+Detached MCP patterns can be caught by the stale and dedupe tiers. Active MCPs inherit a live terminal owner and are protected; detached matches must also survive the quarantine window.
+
+**What if I actually use something in `ALWAYS_KILL`?**
+Live terminal ownership and the hard blocklists still protect it. Remove the pattern if you do not want detached copies cleaned.
 
 **Does this work on Linux?**
-Not yet. The script is POSIX-compatible but the scheduler (`launchd`) is macOS-only. Linux support via `systemd --user` is tracked in [issue #1](https://github.com/tiagonrodrigues/agent-reaper/issues/1). PRs welcome.
+Not yet. The scheduler and process inspection are currently macOS-specific. Linux support via `systemd --user` is tracked in [issue #1](https://github.com/tiagonrodrigues/agent-reaper/issues/1).
 
 **Is this safe? I'm paranoid.**
-Good. Run `reap preview` once and inspect what it would do. The worst case is an orphaned agent getting killed 30 minutes earlier than it otherwise would, which is the point.
+Run `reap preview`. It kills nothing and prints the classifier's decision for every matching PID.
 
 ## Roadmap
 
@@ -253,6 +267,7 @@ Good. Run `reap preview` once and inspect what it would do. The worst case is an
 - [x] v0.6 `HIGH_CPU` tier (sustained-CPU detection for background runaways)
 - [x] v0.7 `DEDUPE` tier (kill duplicate MCP clones from closed agent sessions)
 - [x] v0.8 Default sweep interval lowered 30 min → 10 min, configurable via `REAP_INTERVAL_SEC`
+- [x] v0.9 Live-terminal ownership, interactive-browser protection, detached quarantine, and graceful termination
 - [ ] GitHub Actions release automation (tag → tap bump)
 - [ ] Linux support via `systemd --user` ([#1](https://github.com/tiagonrodrigues/agent-reaper/issues/1))
 - [ ] Patterns for more agent CLIs (Gemini, Replit Agent, etc.)

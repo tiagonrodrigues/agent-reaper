@@ -15,7 +15,7 @@
 set -euo pipefail
 
 readonly REPO_RAW="https://raw.githubusercontent.com/tiagonrodrigues/agent-reaper/main"
-readonly VERSION="0.8.0"
+readonly VERSION="0.9.0"
 # Default sweep interval (seconds). Can be overridden by REAP_INTERVAL_SEC
 # in the user's config or via the environment.
 readonly DEFAULT_INTERVAL_SEC="600"
@@ -173,7 +173,7 @@ echo "  LaunchAgent loaded"
 # --- Sanity check -----------------------------------------------------------
 if launchctl list | grep -q "$LABEL"; then
     echo ""
-    echo "agent-reaper is live. First sweep runs now, next in 30 minutes."
+    echo "agent-reaper is live. First sweep runs now, next in $((INTERVAL_SEC / 60)) minutes."
     echo ""
     if [ "$MODE" != "provided" ]; then
         case ":$PATH:" in

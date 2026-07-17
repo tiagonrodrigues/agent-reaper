@@ -19,7 +19,7 @@ set -u
 # =============================================================================
 # CONSTANTS
 # =============================================================================
-readonly REAP_VERSION="0.8.0"
+readonly REAP_VERSION="0.9.0"
 readonly REAP_LABEL="co.tiagor.agent-reaper"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-reaper"
@@ -27,6 +27,7 @@ LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/share}/agent-reaper"
 readonly CONFIG_DIR LOG_DIR
 readonly CONFIG_FILE="$CONFIG_DIR/config.sh"
 readonly LOG_FILE="$LOG_DIR/reap.log"
+readonly CANDIDATE_STATE_FILE="$LOG_DIR/detached-candidates.tsv"
 
 # Safety: max PIDs a single rule may kill in one run. If exceeded, rule is
 # aborted and logged. Something's probably wrong (user pattern too broad).
@@ -60,6 +61,19 @@ readonly BLOCKLIST=(
     "/reap "
     "/reap run"
     "/reap preview"
+)
+
+# Interactive browsers are user applications, not agent runtime. Their helper
+# processes can legitimately sustain high CPU/RSS during calls, screen sharing,
+# video playback, and WebGL. Generic resource rules must never terminate them.
+readonly INTERACTIVE_BROWSER_BLOCKLIST=(
+    "Google Chrome.app/Contents/"
+    "Safari.app/Contents/"
+    "Firefox.app/Contents/"
+    "Brave Browser.app/Contents/"
+    "Microsoft Edge.app/Contents/"
+    "Arc.app/Contents/"
+    "Dia.app/Contents/"
 )
 
 # =============================================================================
@@ -113,35 +127,243 @@ is_pattern_safe() {
     return 0
 }
 
-# Is this PID's command matching any blocklist entry?
-is_blocked() {
+# Small process-query seams keep the classifier testable without touching real
+# processes. They also centralize macOS ps formatting quirks.
+process_command() {
+    ps -p "$1" -o command= 2>/dev/null || true
+}
+
+process_activity_row() {
+    ps -p "$1" -o ppid=,pgid=,tty= 2>/dev/null || true
+}
+
+has_live_child() {
+    pgrep -P "$1" >/dev/null 2>&1
+}
+
+hard_block_reason() {
     local pid="$1"
     local cmd
-    cmd=$(ps -p "$pid" -o command= 2>/dev/null || echo "")
-    [ -z "$cmd" ] && return 0  # Gone, don't touch
+    cmd=$(process_command "$pid")
+    if [ -z "$cmd" ]; then
+        echo "process no longer exists"
+        return 0
+    fi
+
     local block
     for block in "${BLOCKLIST[@]}"; do
         case "$cmd" in
-            *"$block"*) return 0 ;;
+            *"$block"*)
+                echo "system or shell safety blocklist"
+                return 0
+                ;;
+        esac
+    done
+    for block in "${INTERACTIVE_BROWSER_BLOCKLIST[@]}"; do
+        case "$cmd" in
+            *"$block"*)
+                echo "interactive browser; calls, tabs, and screen sharing are protected"
+                return 0
+                ;;
         esac
     done
     return 1
 }
 
-# Filter a list of PIDs: drop self, parent-of-self, blocked, non-existent.
-sanitize_pids() {
-    local input="$*"
-    local pid
-    local keep=()
-    for pid in $input; do
-        [ "$pid" = "$$" ] && continue
-        [ "$pid" = "$PPID" ] && continue
-        if is_blocked "$pid"; then
-            continue
+is_blocked() {
+    hard_block_reason "$1" >/dev/null
+}
+
+# A process belongs to a live terminal when it or any living ancestor still
+# owns a TTY. This protects active OMP/Codex sessions and every MCP, browser,
+# or worker they spawned, including workers that created their own process
+# group and therefore show tty=?? themselves.
+live_terminal_reason() {
+    local current="$1"
+    local hops=0
+    local row ppid _pgid tty
+    while [ "$current" -gt 1 ] 2>/dev/null && [ "$hops" -lt 32 ]; do
+        row=$(process_activity_row "$current")
+        [ -z "$row" ] && return 1
+        read -r ppid _pgid tty <<< "$row"
+        if [ -n "${tty:-}" ] && [ "$tty" != "??" ] && [ "$tty" != "-" ]; then
+            echo "owned by live terminal $tty"
+            return 0
         fi
-        keep+=("$pid")
+        case "${ppid:-}" in
+            ""|*[!0-9]*) return 1 ;;
+        esac
+        [ "$ppid" = "$current" ] && return 1
+        current="$ppid"
+        hops=$((hops + 1))
     done
-    echo "${keep[*]:-}"
+    return 1
+}
+
+is_agent_browser_daemon() {
+    local cmd="$1"
+    case "$cmd" in
+        *"/agent-browser/bin/agent-browser-"*|*"agent-browser daemon"*) return 0 ;;
+    esac
+    return 1
+}
+
+candidate_signature() {
+    ps -p "$1" -o lstart=,command= 2>/dev/null | cksum | awk '{print $1 ":" $2}'
+}
+
+CURRENT_CANDIDATES_FILE=""
+CLASSIFICATION_REPORT_FILE=""
+
+begin_classification_report() {
+    CLASSIFICATION_REPORT_FILE=$(mktemp "${TMPDIR:-/tmp}/reap-report.XXXXXX")
+}
+
+classification_count() {
+    local status="$1"
+    [ -n "$CLASSIFICATION_REPORT_FILE" ] || {
+        echo 0
+        return
+    }
+    awk -F '\t' -v wanted="$status" \
+        '$1 == wanted && !seen[$2]++ {count++} END {print count+0}' \
+        "$CLASSIFICATION_REPORT_FILE"
+}
+
+finish_classification_report() {
+    [ -n "$CLASSIFICATION_REPORT_FILE" ] \
+        && rm -f "$CLASSIFICATION_REPORT_FILE"
+    CLASSIFICATION_REPORT_FILE=""
+}
+
+begin_candidate_scan() {
+    mkdir -p "$LOG_DIR"
+    touch "$CANDIDATE_STATE_FILE"
+    CURRENT_CANDIDATES_FILE=$(mktemp "${TMPDIR:-/tmp}/reap-candidates.XXXXXX")
+}
+
+finish_candidate_scan() {
+    [ -z "$CURRENT_CANDIDATES_FILE" ] && return 0
+    if [ -s "$CURRENT_CANDIDATES_FILE" ]; then
+        awk -F '\t' 'NR==FNR {seen[$1]=1; next} ($1 in seen)' \
+            "$CURRENT_CANDIDATES_FILE" "$CANDIDATE_STATE_FILE" \
+            > "$CANDIDATE_STATE_FILE.tmp"
+        mv "$CANDIDATE_STATE_FILE.tmp" "$CANDIDATE_STATE_FILE"
+    else
+        : > "$CANDIDATE_STATE_FILE"
+    fi
+    rm -f "$CURRENT_CANDIDATES_FILE"
+    CURRENT_CANDIDATES_FILE=""
+}
+
+candidate_first_seen() {
+    local signature="$1"
+    [ -f "$CANDIDATE_STATE_FILE" ] || return 0
+    awk -F '\t' -v sig="$signature" '$1 == sig {print $2; exit}' "$CANDIDATE_STATE_FILE"
+}
+
+remember_candidate() {
+    local signature="$1"
+    local first_seen="$2"
+    grep -Fq "${signature}"$'\t' "$CANDIDATE_STATE_FILE" 2>/dev/null \
+        || printf '%s\t%s\n' "$signature" "$first_seen" >> "$CANDIDATE_STATE_FILE"
+    [ -n "$CURRENT_CANDIDATES_FILE" ] \
+        && printf '%s\n' "$signature" >> "$CURRENT_CANDIDATES_FILE"
+}
+
+# Prints one of:
+#   kill<TAB>reason
+#   protected<TAB>reason
+#   quarantine<TAB>reason
+#
+# A detached match must remain detached across scheduled scans before it can
+# be killed. One old process is not proof of abandonment; repeated detached
+# observations are.
+classify_candidate() {
+    local pid="$1"
+    local mode="$2"
+    local reason cmd signature first_seen now elapsed grace_seconds remaining
+
+    if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then
+        printf 'protected\tReaper process tree\n'
+        return
+    fi
+    if reason=$(hard_block_reason "$pid"); then
+        printf 'protected\t%s\n' "$reason"
+        return
+    fi
+    if reason=$(live_terminal_reason "$pid"); then
+        printf 'protected\t%s\n' "$reason"
+        return
+    fi
+
+    cmd=$(process_command "$pid")
+    if is_agent_browser_daemon "$cmd" && has_live_child "$pid"; then
+        printf 'protected\tagent-browser session has a live browser child\n'
+        return
+    fi
+
+    if [ "$mode" = "always" ]; then
+        printf 'kill\texplicit ALWAYS_KILL rule and no active owner\n'
+        return
+    fi
+
+    signature=$(candidate_signature "$pid")
+    if [ -z "$signature" ]; then
+        printf 'protected\tprocess no longer exists\n'
+        return
+    fi
+
+    now=$(date +%s)
+    first_seen=$(candidate_first_seen "$signature")
+    grace_seconds=$((DETACHED_GRACE_MINUTES * 60))
+    if [ -z "$first_seen" ]; then
+        if [ "${DRY_RUN:-0}" != "1" ]; then
+            remember_candidate "$signature" "$now"
+        fi
+        printf 'quarantine\tnew detached candidate; requires %sm continuous observation\n' \
+            "$DETACHED_GRACE_MINUTES"
+        return
+    fi
+
+    elapsed=$((now - first_seen))
+    if [ "$elapsed" -lt "$grace_seconds" ]; then
+        if [ "${DRY_RUN:-0}" != "1" ]; then
+            remember_candidate "$signature" "$first_seen"
+        fi
+        remaining=$(((grace_seconds - elapsed + 59) / 60))
+        printf 'quarantine\tdetached candidate; %sm quarantine remaining\n' "$remaining"
+        return
+    fi
+
+    printf 'kill\tdetached for at least %sm across repeated scans\n' \
+        "$DETACHED_GRACE_MINUTES"
+}
+
+# Filter a list of PIDs through hard safety, live-ownership checks, and the
+# repeated-observation quarantine. Only kill-ready PIDs are printed to stdout.
+sanitize_pids() {
+    local mode="$1"
+    shift
+    local input="$*"
+    local pid decision status reason
+    local kept_pids=()
+    for pid in $input; do
+        decision=$(classify_candidate "$pid" "$mode")
+        status="${decision%%$'\t'*}"
+        reason="${decision#*$'\t'}"
+        if [ -n "$CLASSIFICATION_REPORT_FILE" ]; then
+            printf '%s\t%s\t%s\n' "$status" "$pid" "$reason" \
+                >> "$CLASSIFICATION_REPORT_FILE"
+        fi
+        if [ "$status" = "kill" ]; then
+            kept_pids+=("$pid")
+        elif [ "${DRY_RUN:-0}" = "1" ] || [ "${VERBOSE:-0}" = "1" ]; then
+            printf "  ${C_DIM}%-11s PID %-6s %s${C_RESET}\n" \
+                "$status" "$pid" "$reason" >&2
+        fi
+    done
+    echo "${kept_pids[*]:-}"
 }
 
 # =============================================================================
@@ -154,6 +376,9 @@ load_config() {
         "cursor-agent.*stream"
         "codex.*--output-format"
         "aider.*--stream"
+        "codex app-server --listen stdio"
+        "bun .*/\\.bun/bin/omp"
+        "__omp_worker_"
         # MCP servers spawned by AI IDEs. They're almost always children of
         # the IDE, so they become orphans the moment the IDE dies.
         "node.*mcp-server-"
@@ -163,22 +388,26 @@ load_config() {
         "ms-playwright/chromium"
         "puppeteer.*chromium"
         "chrome-headless-shell"
+        "agent-browser/bin/agent-browser-"
+        "mcp-remote"
+        "shadcn mcp"
+        "@modelcontextprotocol/server-"
+        "node.*mcp-server-"
+        "convex.*mcp start"
+        "bun .*/\\.bun/bin/omp"
+        "__omp_worker_"
     )
     OLD_THRESHOLD_HOURS=2
 
-    # HEAVY_MEMORY: opt-in tier that kills processes whose RSS exceeds
-    # HEAVY_MEMORY_MB, regardless of PPID. Empty by default; users must
-    # opt in explicitly. All other safety (blocklist, UID scope, max-kill
-    # cap, pattern sanity) still applies.
+    # HEAVY_MEMORY: opt-in tier for detached processes whose RSS exceeds
+    # HEAVY_MEMORY_MB. Live terminal ownership and interactive browsers remain
+    # protected even when a user opts into a broad resource pattern.
     HEAVY_MEMORY=()
     HEAVY_MEMORY_MB=2000
 
-    # HIGH_CPU: opt-in tier that kills processes whose %CPU stays above
+    # HIGH_CPU: opt-in tier for detached processes whose %CPU stays above
     # HIGH_CPU_PCT across two samples taken HIGH_CPU_SAMPLE_SEC apart.
-    # The two-sample average filters out brief bursts (legitimate active
-    # work) while catching sustained runaways (background loops, leaks,
-    # background-indexing agents whose user already moved on). Empty by
-    # default; opt-in. All hard safety still applies.
+    # Live terminal ownership and interactive browsers remain protected.
     HIGH_CPU=()
     HIGH_CPU_PCT=85
     HIGH_CPU_SAMPLE_SEC=20
@@ -201,12 +430,27 @@ load_config() {
     # protective coverage; raise if you want fewer runs.
     REAP_INTERVAL_SEC=600
 
+    # A match must remain detached across repeated scheduled scans before it
+    # becomes killable. This is the core distinction between an old process
+    # and a process that has demonstrably lost its owner.
+    DETACHED_GRACE_MINUTES=15
+
+    # Graceful shutdown first; SIGKILL is only used for survivors.
+    TERM_GRACE_SEC=3
+
     VERBOSE=0
 
     if [ -f "$CONFIG_FILE" ]; then
         # shellcheck source=/dev/null
         source "$CONFIG_FILE"
     fi
+
+    case "$DETACHED_GRACE_MINUTES" in
+        ""|*[!0-9]*) DETACHED_GRACE_MINUTES=15 ;;
+    esac
+    case "$TERM_GRACE_SEC" in
+        ""|*[!0-9]*) TERM_GRACE_SEC=3 ;;
+    esac
 }
 
 # =============================================================================
@@ -304,8 +548,8 @@ match_high_cpu() {
 # every MCP server pattern across every agent CLI).
 match_dedupe() {
     local pattern="$1"
-    local keep="$2"
-    [ "$keep" -lt 1 ] 2>/dev/null && keep=1   # safety: never zero a pattern
+    local keep_count="$2"
+    [ "$keep_count" -lt 1 ] 2>/dev/null && keep_count=1   # safety: never zero a pattern
     ps -U "$(id -u)" -o pid,etime,command 2>/dev/null | \
         awk -v pat="$pattern" '
             NR > 1 && $0 ~ pat {
@@ -317,7 +561,7 @@ match_dedupe() {
                 else secs = hms[1]
                 printf "%d %s\n", d*86400 + secs, $1
             }
-        ' | sort -n | tail -n +"$((keep + 1))" | awk '{print $2}'
+        ' | sort -n | tail -n +"$((keep_count + 1))" | awk '{print $2}'
 }
 
 # =============================================================================
@@ -333,6 +577,29 @@ format_pid_row() {
     age=$(echo "$info" | awk '{print $1}')
     cmd=$(echo "$info" | awk '{$1=""; print}' | sed 's/^ //' | cut -c1-72)
     printf "    ${C_DIM}PID %-6s  %-12s${C_RESET}  %s\n" "$pid" "$age" "$cmd"
+}
+
+terminate_pids() {
+    local pids="$*"
+    [ -z "$pids" ] && return 0
+
+    # SIGTERM lets MCP servers, browser daemons, and Node wrappers release
+    # sockets and child processes cleanly. SIGKILL is a bounded fallback only.
+    # shellcheck disable=SC2086
+    kill -TERM $pids 2>/dev/null || true
+    sleep "$TERM_GRACE_SEC"
+
+    local pid
+    local survivors=()
+    for pid in $pids; do
+        if kill -0 "$pid" 2>/dev/null; then
+            survivors+=("$pid")
+        fi
+    done
+    if [ "${#survivors[@]}" -gt 0 ]; then
+        kill -KILL "${survivors[@]}" 2>/dev/null || true
+        log "Escalated ${#survivors[@]} stubborn process(es) to SIGKILL. PIDs: ${survivors[*]}"
+    fi
 }
 
 process_rule() {
@@ -356,7 +623,7 @@ process_rule() {
     esac
 
     local pids
-    pids=$(sanitize_pids "$pids_raw")
+    pids=$(sanitize_pids "$mode" "$pids_raw")
     [ -z "$pids" ] && return
 
     local count
@@ -385,11 +652,10 @@ process_rule() {
         for pid in $pids; do format_pid_row "$pid"; done
         DRY_TOTAL=$((DRY_TOTAL + count))
     else
-        # shellcheck disable=SC2086
-        kill -9 $pids 2>/dev/null || true
-        log "Killed $count ($label: $pattern). PIDs: $pids"
+        terminate_pids "$pids"
+        log "Terminated $count ($label: $pattern). PIDs: $pids"
         if [ "$VERBOSE" = "1" ]; then
-            echo "${C_RED}killed${C_RESET} $count, ${C_DIM}$label: $pattern${C_RESET}"
+            echo "${C_RED}terminated${C_RESET} $count, ${C_DIM}$label: $pattern${C_RESET}"
         fi
         KILL_TOTAL=$((KILL_TOTAL + count))
     fi
@@ -420,7 +686,9 @@ cmd_run() {
     load_config
     DRY_RUN=0
     KILL_TOTAL=0
+    begin_candidate_scan
     process_all_rules
+    finish_candidate_scan
 
     if [ "$KILL_TOTAL" -eq 0 ]; then
         log "Clean run, no zombies found"
@@ -440,15 +708,25 @@ cmd_preview() {
     load_config
     DRY_RUN=1
     DRY_TOTAL=0
+    begin_classification_report
 
     echo "${C_BLUE}${C_BOLD}reap preview${C_RESET} ${C_DIM}(dry-run, nothing will be killed)${C_RESET}"
     process_all_rules
 
+    local protected_count quarantine_count
+    protected_count=$(classification_count protected)
+    quarantine_count=$(classification_count quarantine)
+    finish_classification_report
+
     echo ""
     if [ "$DRY_TOTAL" -eq 0 ]; then
-        echo "${C_GREEN}clean${C_RESET}, no zombies detected"
+        if [ "$protected_count" -gt 0 ] || [ "$quarantine_count" -gt 0 ]; then
+            echo "${C_GREEN}no kill-ready processes${C_RESET}  ${C_DIM}${quarantine_count} quarantined · ${protected_count} protected${C_RESET}"
+        else
+            echo "${C_GREEN}clean${C_RESET}, no processes match current rules"
+        fi
     else
-        echo "${C_BOLD}would reap $DRY_TOTAL process(es)${C_RESET}  ${C_DIM}(run 'reap run' to do it)${C_RESET}"
+        echo "${C_BOLD}would reap $DRY_TOTAL process(es)${C_RESET}  ${C_DIM}${quarantine_count} quarantined · ${protected_count} protected${C_RESET}"
     fi
 }
 
@@ -486,6 +764,7 @@ cmd_status() {
 cmd_top() {
     require_nonroot
     load_config
+    DRY_RUN=1
 
     echo "${C_BOLD}reap top${C_RESET} ${C_DIM}(candidates, ordered by RSS — nothing will be killed)${C_RESET}"
     echo ""
@@ -508,7 +787,7 @@ cmd_top() {
             cpu)    pids_raw=$(match_high_cpu "$pattern" "$thresh"); tier="cpu(>${thresh}%)" ;;
             dedupe) pids_raw=$(match_dedupe "$pattern" "$thresh");   tier="dedupe(keep ${thresh})" ;;
         esac
-        pids=$(sanitize_pids "$pids_raw")
+        pids=$(sanitize_pids "$mode" "$pids_raw")
         for pid in $pids; do
             rows="${rows}${pid}"$'\t'"${tier}"$'\t'"${pattern}"$'\n'
         done
@@ -527,7 +806,7 @@ cmd_top() {
     cleanup_cpu_samples
 
     if [ -z "$rows" ]; then
-        echo "${C_GREEN}clean${C_RESET}, no processes match current rules"
+        echo "${C_GREEN}clean${C_RESET}, no kill-ready processes; protected and quarantined matches are shown above"
         return
     fi
 
@@ -715,10 +994,12 @@ cmd_stats() {
     # Totals + run counts in one awk pass.
     awk -v week="$week_ago" -v month="$month_ago" \
         -v c_bold="$C_BOLD" -v c_dim="$C_DIM" -v c_reset="$C_RESET" '
-        /Killed [0-9]+ \(/ {
+        /(Killed|Terminated) [0-9]+ \(/ {
             date = substr($0, 2, 10)
-            match($0, /Killed [0-9]+/)
-            n = substr($0, RSTART + 7, RLENGTH - 7) + 0
+            match($0, /(Killed|Terminated) [0-9]+/)
+            token = substr($0, RSTART, RLENGTH)
+            sub(/^[^ ]+ /, "", token)
+            n = token + 0
             tot += n
             if (date >= week)  wk += n
             if (date >= month) mo += n
@@ -743,9 +1024,11 @@ cmd_stats() {
     # Top 5 most-reaped patterns, sorted by kill count.
     local top
     top=$(awk '
-        /Killed [0-9]+ \(/ {
-            match($0, /Killed [0-9]+/)
-            n = substr($0, RSTART + 7, RLENGTH - 7) + 0
+        /(Killed|Terminated) [0-9]+ \(/ {
+            match($0, /(Killed|Terminated) [0-9]+/)
+            token = substr($0, RSTART, RLENGTH)
+            sub(/^[^ ]+ /, "", token)
+            n = token + 0
             if (match($0, /: [^)]+\)\. PIDs:/)) {
                 pat = substr($0, RSTART + 2, RLENGTH - 10)
                 counts[pat] += n
@@ -767,10 +1050,12 @@ cmd_stats() {
     # Busiest day in the log.
     local busiest
     busiest=$(awk '
-        /Killed [0-9]+ \(/ {
+        /(Killed|Terminated) [0-9]+ \(/ {
             date = substr($0, 2, 10)
-            match($0, /Killed [0-9]+/)
-            n = substr($0, RSTART + 7, RLENGTH - 7) + 0
+            match($0, /(Killed|Terminated) [0-9]+/)
+            token = substr($0, RSTART, RLENGTH)
+            sub(/^[^ ]+ /, "", token)
+            n = token + 0
             per_day[date] += n
         }
         END {
@@ -888,4 +1173,6 @@ main() {
     esac
 }
 
-main "$@"
+if [ "${REAP_TEST_MODE:-0}" != "1" ]; then
+    main "$@"
+fi

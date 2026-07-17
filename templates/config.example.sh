@@ -31,6 +31,9 @@ ORPHAN_ONLY=(
     "cursor-agent.*stream"                          # Cursor Agent
     "codex.*--output-format"                        # OpenAI Codex CLI
     "aider.*--stream"                               # Aider
+    "codex app-server --listen stdio"               # orphaned Codex MCP host
+    "bun .*/\\.bun/bin/omp"                        # orphaned Oh My Pi session
+    "__omp_worker_"                                # orphaned OMP worker
     # MCP servers. They're almost always children of an AI IDE, so they
     # become orphans the moment the IDE dies.
     "node.*mcp-server-"                             # third-party MCP servers
@@ -48,46 +51,44 @@ OLD_PROCESS=(
     "ms-playwright/chromium"
     "puppeteer.*chromium"
     "chrome-headless-shell"                         # Playwright/Puppeteer
+    "agent-browser/bin/agent-browser-"              # idle agent-browser daemon
+    "mcp-remote"                                    # detached remote MCP wrapper
+    "shadcn mcp"                                    # detached shadcn MCP
+    "@modelcontextprotocol/server-"                  # official MCP servers
+    "node.*mcp-server-"                             # third-party MCP servers
+    "convex.*mcp start"                             # Convex MCP wrapper/server
+    "bun .*/\\.bun/bin/omp"                        # detached Oh My Pi session
+    "__omp_worker_"                                # detached OMP worker
     # "selenium.*chromedriver"
 )
 OLD_THRESHOLD_HOURS=2
 
 # =============================================================================
-# HEAVY_MEMORY: patterns killed when RSS exceeds HEAVY_MEMORY_MB, regardless
-# of PPID. This is an *opt-in* tier for catching runaway live processes.
-#
-# Unlike the other tiers it can kill processes whose parent is alive, so
-# keep patterns specific. Empty by default — uncomment to opt in.
-#
-# Use cases: a Chrome tab stuck in a JS loop eating 2GB, an opencode serve
-# leaking to 5GB, a node process that won't release memory after a task.
-#
-# `reap top` shows you what these rules would catch right now.
+# HEAVY_MEMORY: detached matching processes are considered when RSS exceeds
+# HEAVY_MEMORY_MB. Live terminal trees and interactive browsers are always
+# protected, even when they exceed this ceiling. Empty by default.
 # =============================================================================
 HEAVY_MEMORY=(
-    # "Google Chrome Helper"                      # any Chrome renderer >threshold
-    # "node.*opencode"                            # opencode serve memory leaks
-    # "electron.*--renderer"                      # generic Electron renderer bloat
+    # "node.*opencode"                            # detached opencode memory leak
+    # "bun .*/\\.bun/bin/omp"                     # detached OMP above threshold
+    # "__omp_worker_"                             # detached OMP worker above threshold
+    # "electron.*--renderer"                      # detached Electron renderer
 )
 HEAVY_MEMORY_MB=2000   # RSS threshold in MB
 
 # =============================================================================
-# HIGH_CPU: patterns killed when sustained %CPU exceeds HIGH_CPU_PCT across
-# two samples taken HIGH_CPU_SAMPLE_SEC apart. Catches background-runaway
-# processes whose parent is still alive — an indexer that won't quit, a
-# "background" agent provider you're not actively using, a Chrome tab in
-# a JS loop. The two-sample average filters out brief bursts (legit active
-# work) while catching sustained runaways (>HIGH_CPU_PCT for 20s+).
-#
-# Note: when this tier has any pattern, every interactive `reap top` /
-# `reap preview` waits HIGH_CPU_SAMPLE_SEC for the second sample.
+# HIGH_CPU: detached matching processes are considered when sustained %CPU
+# exceeds HIGH_CPU_PCT across two samples. Live terminal trees and interactive
+# browsers are always protected. When enabled, `reap top` and `reap preview`
+# wait HIGH_CPU_SAMPLE_SEC for the second sample.
 # =============================================================================
 HIGH_CPU=(
     # "/.local/bin/agent"                          # cursor-agent main binary
     # "/cursor-agent/.*/agent"                     # cursor-agent versioned binary
     # "/cursor-agent/.*/rg"                        # cursor-agent's bundled ripgrep
     # "node.*opencode.*serve"                      # opencode serve, when not foregrounded
-    # "Google Chrome Helper.*Renderer"             # Chrome tab stuck in CPU loop
+    # "bun .*/\\.bun/bin/omp"                     # detached OMP burning CPU
+    # "__omp_worker_"                             # detached OMP worker burning CPU
 )
 HIGH_CPU_PCT=85           # %CPU threshold (sustained avg of 2 samples)
 HIGH_CPU_SAMPLE_SEC=20    # gap between samples (interactive runs wait this long)
@@ -110,6 +111,7 @@ DEDUPE=(
     # "shadcn mcp"                                  # shadcn MCP server
     # "@modelcontextprotocol/server-"               # official MCP servers
     # "node.*mcp-server-"                           # third-party MCP servers
+    # "convex.*mcp start"                           # Convex MCP wrapper/server
 )
 DEDUPE_KEEP=3
 
@@ -122,6 +124,14 @@ DEDUPE_KEEP=3
 # Take effect: edit, then run `reap install` to regenerate the LaunchAgent.
 # =============================================================================
 REAP_INTERVAL_SEC=600
+
+# A candidate must remain detached across repeated scheduled scans before it
+# can be killed. With the default schedule, 15 minutes means at least two
+# independent observations.
+DETACHED_GRACE_MINUTES=15
+
+# Graceful SIGTERM window before SIGKILL is used for surviving processes.
+TERM_GRACE_SEC=3
 
 # =============================================================================
 # Other options
