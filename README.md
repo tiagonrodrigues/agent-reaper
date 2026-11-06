@@ -197,6 +197,19 @@ DEDUPE=(
 )
 DEDUPE_KEEP=3
 
+# Long-lived hosts (no TTY) whose children leak while the host lives on.
+# Per host, keep the 20 newest children of each command; reap older surplus.
+HOSTS=(
+    "codex app-server"
+    "claude --output-format stream-json"
+)
+HOST_CHILDREN_KEEP=20
+HOST_CHILDREN_MIN_AGE_MIN=15
+
+# Notify above this much swap; tighten the HOSTS tier above the critical mark.
+SWAP_ALERT_MB=8192
+SWAP_CRITICAL_MB=12288
+
 # Require repeated detached observations before termination.
 DETACHED_GRACE_MINUTES=15
 
@@ -210,7 +223,7 @@ Hardcoded defenses. Not configurable. They apply to every rule tier:
 
 - **Never runs as root.** Exits immediately if invoked with `EUID=0`.
 - **UID-scoped.** Only processes owned by the invoking user are considered.
-- **Live terminal ownership.** A PID is protected when it or any living ancestor owns a TTY. Active OMP/Codex sessions therefore protect their MCPs, workers, and automation browsers.
+- **Live owner protection.** A PID is protected when it or any living ancestor owns a TTY, or when a living ancestor is one of the `HOSTS` (GUI wrappers such as T3 Code run agents without a TTY). Active sessions therefore protect their MCPs, workers, and automation browsers. Leaks under a live host are capped by the `HOSTS` tier instead.
 - **Interactive browser blocklist.** Chrome, Safari, Firefox, Brave, Edge, Arc, and Dia app processes are never killed. Google Meet, screen sharing, tabs, and renderer spikes stay untouched.
 - **Repeated detached observations.** A new detached match enters quarantine instead of being killed. It must remain detached for `DETACHED_GRACE_MINUTES` across scheduled scans.
 - **Active agent-browser sessions.** Daemons with live browser children are protected.
@@ -268,6 +281,7 @@ Run `reap preview`. It kills nothing and prints the classifier's decision for ev
 - [x] v0.7 `DEDUPE` tier (kill duplicate MCP clones from closed agent sessions)
 - [x] v0.8 Default sweep interval lowered 30 min → 10 min, configurable via `REAP_INTERVAL_SEC`
 - [x] v0.9 Live-terminal ownership, interactive-browser protection, detached quarantine, and graceful termination
+- [x] v0.10 `HOSTS` tier for children leaked under live GUI hosts, swap memory guard with notifications
 - [ ] GitHub Actions release automation (tag → tap bump)
 - [ ] Linux support via `systemd --user` ([#1](https://github.com/tiagonrodrigues/agent-reaper/issues/1))
 - [ ] Patterns for more agent CLIs (Gemini, Replit Agent, etc.)

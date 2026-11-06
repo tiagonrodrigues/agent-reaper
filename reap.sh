@@ -19,7 +19,7 @@ set -u
 # =============================================================================
 # CONSTANTS
 # =============================================================================
-readonly REAP_VERSION="0.9.0"
+readonly REAP_VERSION="0.10.0"
 readonly REAP_LABEL="co.tiagor.agent-reaper"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-reaper"
@@ -174,11 +174,21 @@ is_blocked() {
     hard_block_reason "$1" >/dev/null
 }
 
-# A process belongs to a live terminal when it or any living ancestor still
-# owns a TTY. This protects active OMP/Codex sessions and every MCP, browser,
-# or worker they spawned, including workers that created their own process
-# group and therefore show tty=?? themselves.
-live_terminal_reason() {
+is_agent_host() {
+    local cmd="$1" host
+    for host in ${HOSTS[@]+"${HOSTS[@]}"}; do
+        [[ "$cmd" =~ $host ]] && return 0
+    done
+    return 1
+}
+
+# A process has a live owner when it or any living ancestor still owns a TTY,
+# or when a living ancestor is an agent host from HOSTS (GUI wrappers such as
+# T3 Code run their agents without a TTY). This protects active sessions and
+# every MCP, browser, or worker they spawned, including workers that created
+# their own process group and therefore show tty=?? themselves. Leaks under a
+# live host are the HOSTS tier's job, not the detached tiers'.
+live_owner_reason() {
     local current="$1"
     local hops=0
     local row ppid _pgid tty
@@ -188,6 +198,10 @@ live_terminal_reason() {
         read -r ppid _pgid tty <<< "$row"
         if [ -n "${tty:-}" ] && [ "$tty" != "??" ] && [ "$tty" != "-" ]; then
             echo "owned by live terminal $tty"
+            return 0
+        fi
+        if [ "$hops" -gt 0 ] && is_agent_host "$(process_command "$current")"; then
+            echo "owned by live agent host PID $current"
             return 0
         fi
         case "${ppid:-}" in
@@ -292,7 +306,13 @@ classify_candidate() {
         printf 'protected\t%s\n' "$reason"
         return
     fi
-    if reason=$(live_terminal_reason "$pid"); then
+    # Surplus duplicates under a live host are not detached, so quarantine and
+    # owner protection do not apply. The group shape is the evidence.
+    if [ "$mode" = "host" ]; then
+        printf 'kill\tsurplus duplicate under a live agent host\n'
+        return
+    fi
+    if reason=$(live_owner_reason "$pid"); then
         printf 'protected\t%s\n' "$reason"
         return
     fi
@@ -425,6 +445,29 @@ load_config() {
     DEDUPE=()
     DEDUPE_KEEP=3
 
+    # HOSTS: long-lived agent hosts whose direct children leak while the host
+    # stays alive. Codex app-server starts a full MCP set per thread and
+    # subagent and never stops it; under T3 Code that reached 116 sets and
+    # 35 GB overnight. For each host, children are grouped by command and the
+    # HOST_CHILDREN_KEEP newest per group survive; older surplus children past
+    # HOST_CHILDREN_MIN_AGE_MIN are reaped with their subtrees. Hosts also
+    # count as live owners, so the detached tiers leave their trees alone.
+    # 20/15 replayed against a heavy T3 subagent night cut no live session
+    # and capped the leak at about 20 sets; 6/30 cut 6 live sessions.
+    HOSTS=(
+        "codex app-server"
+        "claude --output-format stream-json"
+    )
+    HOST_CHILDREN_KEEP=20
+    HOST_CHILDREN_MIN_AGE_MIN=15
+
+    # Memory guard: above SWAP_ALERT_MB of used swap, log and notify with the
+    # heaviest process trees. Above SWAP_CRITICAL_MB, the HOSTS tier runs with
+    # half the keep, a 5 minute age floor, and no batch cap for that run.
+    SWAP_ALERT_MB=8192
+    SWAP_CRITICAL_MB=12288
+    RULE_KILL_CAP=$MAX_KILLS_PER_RULE
+
     # Sweep interval (seconds). install.sh substitutes this into the
     # LaunchAgent plist on `reap install`. Default 600 (10 min) for
     # protective coverage; raise if you want fewer runs.
@@ -450,6 +493,12 @@ load_config() {
     esac
     case "$TERM_GRACE_SEC" in
         ""|*[!0-9]*) TERM_GRACE_SEC=3 ;;
+    esac
+    case "$HOST_CHILDREN_KEEP" in
+        ""|*[!0-9]*|0) HOST_CHILDREN_KEEP=20 ;;
+    esac
+    case "$HOST_CHILDREN_MIN_AGE_MIN" in
+        ""|*[!0-9]*) HOST_CHILDREN_MIN_AGE_MIN=15 ;;
     esac
 }
 
@@ -561,7 +610,70 @@ match_dedupe() {
                 else secs = hms[1]
                 printf "%d %s\n", d*86400 + secs, $1
             }
-        ' | sort -n | tail -n +"$((keep_count + 1))" | awk '{print $2}'
+        ' | sort -n | tail -n +"$((keep_count + 1))" | sort -rn | awk '{print $2}'
+}
+
+# Process table seam: "pid ppid etime command" for the invoking user.
+process_table() {
+    ps -U "$(id -u)" -o pid=,ppid=,etime=,command= 2>/dev/null
+}
+
+# match_host_children: for each live process matching the host pattern, group
+# its direct children by command (digits normalized), keep the `keep` newest
+# per group, and print older surplus children past `min_age_min`, oldest first.
+match_host_children() {
+    local pattern="$1"
+    local keep_count="$2"
+    local min_age_sec=$(($3 * 60))
+    [ "$keep_count" -lt 1 ] 2>/dev/null && keep_count=1   # safety: never zero a group
+    process_table | awk -v pat="$pattern" '
+        {
+            n = split($3, t, "-")
+            if (n == 2) { d = t[1]; rest = t[2] } else { d = 0; rest = t[1] }
+            m = split(rest, hms, ":")
+            if (m == 3) secs = hms[1]*3600 + hms[2]*60 + hms[3]
+            else if (m == 2) secs = hms[1]*60 + hms[2]
+            else secs = hms[1]
+            cmd = $0
+            sub(/^ *[0-9]+ +[0-9]+ +[^ ]+ +/, "", cmd)
+            pid[NR] = $1; parent[NR] = $2; age[NR] = d*86400 + secs; command[NR] = cmd
+            if (cmd ~ pat) host[$1] = 1
+        }
+        END {
+            for (i = 1; i <= NR; i++) {
+                if (!(parent[i] in host)) continue
+                key = command[i]
+                gsub(/[0-9]+/, "#", key)
+                printf "%s %s\t%d\t%s\n", parent[i], key, age[i], pid[i]
+            }
+        }
+    ' | sort -t $'\t' -k1,1 -k2,2n | awk -F '\t' -v keep="$keep_count" -v min_age="$min_age_sec" '
+        $1 != group { group = $1; seen = 0 }
+        { seen++ }
+        seen > keep && $2 >= min_age { print $2, $3 }
+    ' | sort -rn | awk '{print $2}'
+}
+
+# Expand kill-ready roots with their living descendants so a reaped host or
+# MCP wrapper does not leave grandchildren to reparent to launchd. The hard
+# blocklist still applies to every descendant.
+with_descendants() {
+    [ -z "$*" ] && return 0
+    local pid out=()
+    for pid in $(process_table | awk -v roots=" $* " '
+        { parent[$1] = $2 }
+        END {
+            n = split(roots, r, " ")
+            for (i = 1; i <= n; i++) tree[r[i]] = 1
+            do {
+                grew = 0
+                for (p in parent) if (!(p in tree) && (parent[p] in tree)) { tree[p] = 1; grew = 1 }
+            } while (grew)
+            for (p in tree) print p
+        }' | sort -n); do
+        is_blocked "$pid" || out+=("$pid")
+    done
+    echo "${out[*]:-}"
 }
 
 # =============================================================================
@@ -620,6 +732,7 @@ process_rule() {
         heavy)  pids_raw=$(match_heavy  "$pattern" "$thresh") ;;
         cpu)    pids_raw=$(match_high_cpu "$pattern" "$thresh") ;;
         dedupe) pids_raw=$(match_dedupe "$pattern" "$thresh") ;;
+        host)   pids_raw=$(match_host_children "$pattern" "$thresh" "$HOST_CHILDREN_MIN_AGE_MIN") ;;
     esac
 
     local pids
@@ -628,12 +741,30 @@ process_rule() {
 
     local count
     count=$(echo "$pids" | wc -w | tr -d ' ')
-    if [ "$count" -gt "$MAX_KILLS_PER_RULE" ]; then
-        warn "rule '$pattern' ($mode) matched $count processes (>$MAX_KILLS_PER_RULE cap)"
-        warn "aborting this rule. Review manually, something looks off"
-        log "ABORTED rule '$pattern' ($mode): $count matches exceeds cap"
-        return
+    if [ "$count" -gt "$RULE_KILL_CAP" ]; then
+        case "$mode" in
+            dedupe|host)
+                # Surplus duplicates arrive oldest first. Reap a capped batch
+                # so a large leak drains across runs instead of aborting forever.
+                # shellcheck disable=SC2086
+                pids=$(printf '%s\n' $pids | head -n "$RULE_KILL_CAP" | tr '\n' ' ')
+                log "Capped rule '$pattern' ($mode): $count matches, reaping oldest $RULE_KILL_CAP"
+                count=$RULE_KILL_CAP
+                ;;
+            *)
+                warn "rule '$pattern' ($mode) matched $count processes (>$RULE_KILL_CAP cap)"
+                warn "aborting this rule. Review manually, something looks off"
+                log "ABORTED rule '$pattern' ($mode): $count matches exceeds cap"
+                return
+                ;;
+        esac
     fi
+
+    local targets extra
+    # shellcheck disable=SC2086
+    targets=$(with_descendants $pids)
+    extra=$(( $(echo "$targets" | wc -w) - count ))
+    [ "$extra" -lt 0 ] && extra=0
 
     local label
     case "$mode" in
@@ -643,17 +774,18 @@ process_rule() {
         heavy)  label="heavy (>${thresh}MB RSS)" ;;
         cpu)    label="cpu (>${thresh}% sustained)" ;;
         dedupe) label="dedupe (keep ${thresh} newest)" ;;
+        host)   label="host surplus (keep ${thresh} newest per command)" ;;
     esac
 
     if [ "$DRY_RUN" = "1" ]; then
         echo ""
-        echo "${C_YELLOW}would kill${C_RESET} ${C_BOLD}$count${C_RESET} process(es), ${C_DIM}$label: $pattern${C_RESET}"
+        echo "${C_YELLOW}would kill${C_RESET} ${C_BOLD}$count${C_RESET} process(es) ${C_DIM}+$extra descendant(s), $label: $pattern${C_RESET}"
         local pid
         for pid in $pids; do format_pid_row "$pid"; done
         DRY_TOTAL=$((DRY_TOTAL + count))
     else
-        terminate_pids "$pids"
-        log "Terminated $count ($label: $pattern). PIDs: $pids"
+        terminate_pids "$targets"
+        log "Terminated $count ($label: $pattern). PIDs: $pids (+$extra descendants)"
         if [ "$VERBOSE" = "1" ]; then
             echo "${C_RED}terminated${C_RESET} $count, ${C_DIM}$label: $pattern${C_RESET}"
         fi
@@ -669,12 +801,103 @@ process_all_rules() {
     local p
     for p in ${ALWAYS_KILL[@]+"${ALWAYS_KILL[@]}"};   do process_rule always "$p"; done
     for p in ${ORPHAN_ONLY[@]+"${ORPHAN_ONLY[@]}"};   do process_rule orphan "$p"; done
+    for p in ${HOSTS[@]+"${HOSTS[@]}"};               do process_rule host   "$p" "$HOST_CHILDREN_KEEP"; done
     for p in ${OLD_PROCESS[@]+"${OLD_PROCESS[@]}"};   do process_rule stale  "$p" "$OLD_THRESHOLD_HOURS"; done
     for p in ${HEAVY_MEMORY[@]+"${HEAVY_MEMORY[@]}"}; do process_rule heavy  "$p" "$HEAVY_MEMORY_MB"; done
     for p in ${HIGH_CPU[@]+"${HIGH_CPU[@]}"};         do process_rule cpu    "$p" "$HIGH_CPU_PCT"; done
     for p in ${DEDUPE[@]+"${DEDUPE[@]}"};             do process_rule dedupe "$p" "$DEDUPE_KEEP"; done
 
     cleanup_cpu_samples
+}
+
+# =============================================================================
+# MEMORY GUARD
+# =============================================================================
+
+swap_used_mb() {
+    sysctl -n vm.swapusage 2>/dev/null | awk '{
+        for (i = 1; i < NF; i++) if ($i == "used") {
+            v = $(i + 2); u = substr(v, length(v)); n = substr(v, 1, length(v) - 1) + 0
+            if (u == "G") n *= 1024
+            printf "%d\n", n
+            exit
+        }
+    }'
+}
+
+# Heaviest process trees by footprint, as "T3 Code 30.1G via codex, Name 2.0G".
+# top's MEM counts compressed and swapped pages; ps RSS misses them exactly
+# when it matters. Each process is charged to its top ancestor below launchd;
+# "via" names the deepest descendant whose subtree still holds most of it.
+top_memory_trees() {
+    {
+        top -l 1 -o mem -n 2000 -stats pid,mem 2>/dev/null | awk '$1 ~ /^[0-9]+$/ {print "M", $1, $2}'
+        ps -axo pid=,ppid=,comm= | awk '{print "P", $0}'
+    } | awk '
+        $1 == "M" {
+            v = $3; gsub(/[+-]/, "", v); u = substr(v, length(v)); n = substr(v, 1, length(v) - 1) + 0
+            if (u == "G") n *= 1024; else if (u == "K") n /= 1024; else if (u == "B") n /= 1048576
+            mem[$2] = n
+            next
+        }
+        $1 == "P" {
+            parent[$2] = $3
+            kids[$3] = kids[$3] " " $2
+            c = $0; sub(/^P +[0-9]+ +[0-9]+ +/, "", c); sub(/.*\//, "", c)
+            name[$2] = c
+        }
+        END {
+            for (p in mem) {
+                r = p; hops = 0
+                total[r] += mem[p]
+                while ((r in parent) && parent[r] > 1 && hops < 64) { r = parent[r]; total[r] += mem[p]; hops++ }
+                root[r] = 1
+            }
+            for (r in root) {
+                cur = r
+                for (depth = 0; depth < 64; depth++) {
+                    n = split(kids[cur], k, " "); best = ""; bestv = 0
+                    for (i = 1; i <= n; i++) if (total[k[i]] > bestv) { bestv = total[k[i]]; best = k[i] }
+                    if (best == "" || bestv < total[r] / 2) break
+                    cur = best
+                }
+                printf "%d\t%s\t%s\n", total[r], name[r], (cur != r ? name[cur] : "")
+            }
+        }
+    ' | sort -rn | head -n 3 | awk -F '\t' '{
+        printf "%s%s %.1fG%s", sep, $2, $1 / 1024, ($3 != "" && $3 != $2 ? " via " $3 : ""); sep = ", "
+    }'
+}
+
+notify_memory() {
+    local level="$1" message="$2"
+    local stamp="$LOG_DIR/last-memory-$level"
+    [ -n "$(find "$stamp" -mmin -60 2>/dev/null)" ] && return 0
+    touch "$stamp"
+    osascript -e "display notification \"${message//\"/}\" with title \"Agent Reaper\" subtitle \"Memory $level\"" \
+        >/dev/null 2>&1 || true
+}
+
+# Runs once per scheduled sweep, before the rules. Above SWAP_ALERT_MB it logs
+# and notifies (at most hourly per level) with the heaviest trees. Above
+# SWAP_CRITICAL_MB it also tightens the HOSTS tier for this run.
+memory_guard() {
+    local used trees
+    used=$(swap_used_mb)
+    case "$used" in ""|*[!0-9]*) return 0 ;; esac
+    [ "$used" -ge "$SWAP_ALERT_MB" ] || return 0
+
+    trees=$(top_memory_trees)
+    if [ "$used" -ge "$SWAP_CRITICAL_MB" ]; then
+        HOST_CHILDREN_KEEP=$(( (HOST_CHILDREN_KEEP + 1) / 2 ))
+        HOST_CHILDREN_MIN_AGE_MIN=5
+        RULE_KILL_CAP=100000
+        log "Memory CRITICAL: swap ${used}MB used, HOSTS tier tightened for this run. Heaviest: $trees"
+        notify_memory critical "Swap at $((used / 1024)) GB. Reaping surplus agent children. Heaviest: $trees"
+    else
+        log "Memory alert: swap ${used}MB used. Heaviest: $trees"
+        notify_memory alert "Swap at $((used / 1024)) GB. Heaviest: $trees"
+    fi
 }
 
 # =============================================================================
@@ -687,6 +910,7 @@ cmd_run() {
     DRY_RUN=0
     KILL_TOTAL=0
     begin_candidate_scan
+    memory_guard
     process_all_rules
     finish_candidate_scan
 
@@ -743,8 +967,9 @@ cmd_status() {
         echo "${C_YELLOW}○${C_RESET} not scheduled. Run '${C_BOLD}reap install${C_RESET}'"
     fi
 
-    local a="${#ALWAYS_KILL[@]}" o="${#ORPHAN_ONLY[@]}" s="${#OLD_PROCESS[@]}" h="${#HEAVY_MEMORY[@]}" c="${#HIGH_CPU[@]}" d="${#DEDUPE[@]}"
-    echo "${C_DIM}  config: $a always · $o orphan · $s stale (>${OLD_THRESHOLD_HOURS}h) · $h heavy (>${HEAVY_MEMORY_MB}MB) · $c cpu (>${HIGH_CPU_PCT}%) · $d dedupe (keep ${DEDUPE_KEEP})${C_RESET}"
+    local a="${#ALWAYS_KILL[@]}" o="${#ORPHAN_ONLY[@]}" s="${#OLD_PROCESS[@]}" h="${#HEAVY_MEMORY[@]}" c="${#HIGH_CPU[@]}" d="${#DEDUPE[@]}" k="${#HOSTS[@]}"
+    echo "${C_DIM}  config: $a always · $o orphan · $k hosts (keep ${HOST_CHILDREN_KEEP}) · $s stale (>${OLD_THRESHOLD_HOURS}h) · $h heavy (>${HEAVY_MEMORY_MB}MB) · $c cpu (>${HIGH_CPU_PCT}%) · $d dedupe (keep ${DEDUPE_KEEP})${C_RESET}"
+    echo "${C_DIM}  memory: swap $(swap_used_mb)MB used · alert ${SWAP_ALERT_MB}MB · critical ${SWAP_CRITICAL_MB}MB${C_RESET}"
 
     if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
         echo ""
@@ -786,6 +1011,7 @@ cmd_top() {
             heavy)  pids_raw=$(match_heavy  "$pattern" "$thresh");   tier="heavy(>${thresh}MB)" ;;
             cpu)    pids_raw=$(match_high_cpu "$pattern" "$thresh"); tier="cpu(>${thresh}%)" ;;
             dedupe) pids_raw=$(match_dedupe "$pattern" "$thresh");   tier="dedupe(keep ${thresh})" ;;
+            host)   pids_raw=$(match_host_children "$pattern" "$thresh" "$HOST_CHILDREN_MIN_AGE_MIN"); tier="host(keep ${thresh})" ;;
         esac
         pids=$(sanitize_pids "$mode" "$pids_raw")
         for pid in $pids; do
@@ -798,6 +1024,7 @@ cmd_top() {
 
     for pattern in ${ALWAYS_KILL[@]+"${ALWAYS_KILL[@]}"};   do add_rows always "$pattern"; done
     for pattern in ${ORPHAN_ONLY[@]+"${ORPHAN_ONLY[@]}"};   do add_rows orphan "$pattern"; done
+    for pattern in ${HOSTS[@]+"${HOSTS[@]}"};               do add_rows host   "$pattern" "$HOST_CHILDREN_KEEP"; done
     for pattern in ${OLD_PROCESS[@]+"${OLD_PROCESS[@]}"};   do add_rows stale  "$pattern" "$OLD_THRESHOLD_HOURS"; done
     for pattern in ${HEAVY_MEMORY[@]+"${HEAVY_MEMORY[@]}"}; do add_rows heavy  "$pattern" "$HEAVY_MEMORY_MB"; done
     for pattern in ${HIGH_CPU[@]+"${HIGH_CPU[@]}"};         do add_rows cpu    "$pattern" "$HIGH_CPU_PCT"; done
@@ -903,9 +1130,9 @@ cmd_doctor() {
 
     # 5. config
     if [ -f "$CONFIG_FILE" ]; then
-        local a=${#ALWAYS_KILL[@]} o=${#ORPHAN_ONLY[@]} s=${#OLD_PROCESS[@]} h=${#HEAVY_MEMORY[@]} c=${#HIGH_CPU[@]} d=${#DEDUPE[@]}
-        printf "  %s  %-16s ${C_DIM}%d always · %d orphan · %d stale · %d heavy · %d cpu · %d dedupe${C_RESET}\n" \
-            "$C_OK" "config" "$a" "$o" "$s" "$h" "$c" "$d"
+        local a=${#ALWAYS_KILL[@]} o=${#ORPHAN_ONLY[@]} s=${#OLD_PROCESS[@]} h=${#HEAVY_MEMORY[@]} c=${#HIGH_CPU[@]} d=${#DEDUPE[@]} k=${#HOSTS[@]}
+        printf "  %s  %-16s ${C_DIM}%d always · %d orphan · %d hosts · %d stale · %d heavy · %d cpu · %d dedupe${C_RESET}\n" \
+            "$C_OK" "config" "$a" "$o" "$k" "$s" "$h" "$c" "$d"
     else
         printf "  %s  %-16s ${C_RED}missing${C_RESET} ${C_DIM}(%s)${C_RESET}\n" \
             "$C_BAD" "config" "${CONFIG_FILE/#$HOME/~}"

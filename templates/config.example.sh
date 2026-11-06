@@ -116,6 +116,32 @@ DEDUPE=(
 DEDUPE_KEEP=3
 
 # =============================================================================
+# HOSTS: long-lived agent hosts whose direct children leak while the host
+# stays alive. Codex app-server starts a full MCP set per thread and subagent
+# and never stops it; under a GUI wrapper such as T3 Code that reached 116
+# sets and 35 GB overnight.
+#
+# For each host, children are grouped by command and the HOST_CHILDREN_KEEP
+# newest per group survive. Older surplus children past
+# HOST_CHILDREN_MIN_AGE_MIN are reaped with their subtrees. Hosts also count
+# as live owners, so the detached tiers leave their trees alone.
+# =============================================================================
+HOSTS=(
+    "codex app-server"                     # Codex under T3 Code, Codex app, IDEs
+    "claude --output-format stream-json"   # Claude Code under a GUI wrapper
+)
+HOST_CHILDREN_KEEP=20
+HOST_CHILDREN_MIN_AGE_MIN=15
+
+# =============================================================================
+# Memory guard: above SWAP_ALERT_MB of used swap, log and notify (at most
+# hourly) with the heaviest process trees. Above SWAP_CRITICAL_MB the HOSTS
+# tier runs with half the keep and a 5 minute age floor for that sweep.
+# =============================================================================
+SWAP_ALERT_MB=8192
+SWAP_CRITICAL_MB=12288
+
+# =============================================================================
 # Sweep interval (seconds). Default 600 (10 min). Lower = faster cleanup
 # of leaks, slightly more CPU on the sweep itself (~100 ms × 144 sweeps/day
 # at 600s = ~14 s/day total). Raise to 1800 for 30-min sweeps if you prefer
