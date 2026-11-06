@@ -6,6 +6,7 @@
 #   reap                    Show status (last run, schedule, recent kills)
 #   reap preview            Dry-run: show what would be killed, kill nothing
 #   reap run                Kill zombies now
+#   reap disk [run]         Idle agent worktrees: preview, or move deps to the Trash now
 #   reap logs [-f]          Tail the log
 #   reap config             Open config in $EDITOR
 #   reap install            (Re)install the LaunchAgent
@@ -19,7 +20,7 @@ set -u
 # =============================================================================
 # CONSTANTS
 # =============================================================================
-readonly REAP_VERSION="0.10.0"
+readonly REAP_VERSION="0.11.0"
 readonly REAP_LABEL="co.tiagor.agent-reaper"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-reaper"
@@ -468,6 +469,19 @@ load_config() {
     SWAP_CRITICAL_MB=12288
     RULE_KILL_CAP=$MAX_KILLS_PER_RULE
 
+    # WORKTREE_ROOTS: opt-in disk cleanup. Agent wrappers create a git
+    # worktree per thread or subagent and never remove it; each one carries
+    # its own node_modules and build cache (about 1.6 GB for a Next.js app).
+    # Under these roots, linked worktrees that are clean, idle for
+    # WORKTREE_IDLE_DAYS and not in use get their WORKTREE_DEPENDENCY_DIRS
+    # moved to the Trash once every WORKTREE_SCAN_HOURS. Code, commits and
+    # uncommitted work are never touched; an install brings them back.
+    WORKTREE_ROOTS=()
+    WORKTREE_IDLE_DAYS=3
+    WORKTREE_DEPENDENCY_DIRS=(node_modules .next)
+    WORKTREE_SCAN_HOURS=24
+    WORKTREE_NOTIFY_GB=1
+
     # Sweep interval (seconds). install.sh substitutes this into the
     # LaunchAgent plist on `reap install`. Default 600 (10 min) for
     # protective coverage; raise if you want fewer runs.
@@ -499,6 +513,15 @@ load_config() {
     esac
     case "$HOST_CHILDREN_MIN_AGE_MIN" in
         ""|*[!0-9]*) HOST_CHILDREN_MIN_AGE_MIN=15 ;;
+    esac
+    case "$WORKTREE_IDLE_DAYS" in
+        ""|*[!0-9]*|0) WORKTREE_IDLE_DAYS=3 ;;
+    esac
+    case "$WORKTREE_SCAN_HOURS" in
+        ""|*[!0-9]*) WORKTREE_SCAN_HOURS=24 ;;
+    esac
+    case "$WORKTREE_NOTIFY_GB" in
+        ""|*[!0-9]*) WORKTREE_NOTIFY_GB=1 ;;
     esac
 }
 
@@ -901,6 +924,164 @@ memory_guard() {
 }
 
 # =============================================================================
+# DISK: dependency folders of idle agent worktrees
+# =============================================================================
+
+readonly WORKTREE_STATE_FILE="$LOG_DIR/worktrees-last-scan"
+readonly WORKTREE_HISTORY_FILE="$LOG_DIR/worktrees.tsv"
+
+# A dependency dir name must be a plain folder name. Anything with a slash,
+# a dot-only name or .git is refused, whatever the config says.
+is_dependency_name_safe() {
+    case "$1" in
+        ""|.|..|.git|*/*) return 1 ;;
+    esac
+    return 0
+}
+
+# Linked worktrees under the configured roots, one per line. A linked worktree
+# has a .git *file* pointing at the main repository; main checkouts have a
+# .git directory and are never considered. Dependency folders are pruned so
+# the walk stays shallow and fast.
+list_worktrees() {
+    local root
+    for root in ${WORKTREE_ROOTS[@]+"${WORKTREE_ROOTS[@]}"}; do
+        root="${root%/}"
+        [ -d "$root" ] || continue
+        case "$root" in "$HOME"|"$HOME"/|/|/Users|/System*|/Library*) continue ;; esac
+        find "$root" -mindepth 2 -maxdepth 5 \
+            \( -name node_modules -o -name .next -o -name .venv -o -name target \) -prune \
+            -o -name .git -type f -print 2>/dev/null
+    done | sed 's#/\.git$##' | sort -u
+}
+
+# Epoch seconds of the last git activity in a worktree: the newest of its
+# index, HEAD and HEAD reflog inside the worktree's own git dir.
+worktree_last_activity() {
+    local wt="$1" gitdir newest=0 f m
+    gitdir=$(git -C "$wt" rev-parse --absolute-git-dir 2>/dev/null) || { echo 0; return; }
+    for f in "$gitdir/index" "$gitdir/HEAD" "$gitdir/logs/HEAD"; do
+        [ -e "$f" ] || continue
+        m=$(stat -f %m "$f" 2>/dev/null || echo 0)
+        [ "$m" -gt "$newest" ] && newest=$m
+    done
+    echo "$newest"
+}
+
+# Prints the reason a worktree must be left alone, or nothing when it is safe
+# to clean. $2 is the snapshot of process cwds and command lines.
+worktree_skip_reason() {
+    local wt="$1" in_use="$2" last now
+    now=$(date +%s)
+    last=$(worktree_last_activity "$wt")
+    if [ "$last" -gt 0 ] && [ $((now - last)) -lt $((WORKTREE_IDLE_DAYS * 86400)) ]; then
+        echo "git activity in the last ${WORKTREE_IDLE_DAYS}d"
+        return
+    fi
+    # lsof reports resolved paths (/private/var, not /var), so match both.
+    local real
+    real=$(cd "$wt" 2>/dev/null && pwd -P) || real="$wt"
+    if grep -qF -e "$wt" -e "$real" <<< "$in_use"; then
+        echo "a process is running inside it"
+        return
+    fi
+    # --no-optional-locks: never rewrite the index, which would reset the idle clock.
+    local status
+    if ! status=$(git --no-optional-locks -C "$wt" status --porcelain 2>/dev/null); then
+        echo "git status failed"
+        return
+    fi
+    if [ -n "$status" ]; then
+        echo "uncommitted changes"
+        return
+    fi
+}
+
+# Moves paths to the Trash (never deletes). Separate function so tests can
+# replace it.
+trash_paths() {
+    /usr/bin/trash "$@" >/dev/null 2>&1
+}
+
+format_size_kb() {
+    awk -v kb="$1" 'BEGIN {
+        if (kb >= 1048576) printf "%.1f GB", kb / 1048576
+        else printf "%d MB", kb / 1024
+    }'
+}
+
+# Scans the roots. DRY_RUN=1 only reports. Sets DISK_TOTAL_KB and
+# DISK_CLEANED for the caller.
+process_worktrees() {
+    DISK_TOTAL_KB=0
+    DISK_CLEANED=0
+    local skipped=0
+    [ ${#WORKTREE_ROOTS[@]} -eq 0 ] && return 0
+
+    if [ "$DRY_RUN" != "1" ] && [ ! -x /usr/bin/trash ]; then
+        log "Worktrees: /usr/bin/trash not found (macOS 15+), skipping disk cleanup"
+        return 0
+    fi
+
+    local in_use
+    in_use=$( { lsof -nP -a -u "$(id -u)" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'
+                ps -U "$(id -u)" -o command= 2>/dev/null; } )
+
+    local wt reason name kb targets
+    while IFS= read -r wt; do
+        [ -n "$wt" ] || continue
+        targets=()
+        for name in ${WORKTREE_DEPENDENCY_DIRS[@]+"${WORKTREE_DEPENDENCY_DIRS[@]}"}; do
+            is_dependency_name_safe "$name" || continue
+            [ -d "$wt/$name" ] && [ ! -L "$wt/$name" ] && targets+=("$wt/$name")
+        done
+        [ ${#targets[@]} -eq 0 ] && continue
+
+        reason=$(worktree_skip_reason "$wt" "$in_use")
+        if [ -n "$reason" ]; then
+            skipped=$((skipped + 1))
+            [ "$DRY_RUN" = "1" ] && printf "  ${C_DIM}keep        %s  %s${C_RESET}\n" "$wt" "$reason"
+            continue
+        fi
+
+        kb=$(du -sk "${targets[@]}" 2>/dev/null | awk '{s += $1} END {print s + 0}')
+        if [ "$DRY_RUN" = "1" ]; then
+            printf "  ${C_YELLOW}trash${C_RESET}       %s  ${C_BOLD}%s${C_RESET}\n" "$wt" "$(format_size_kb "$kb")"
+        else
+            if ! trash_paths "${targets[@]}"; then
+                log "Worktrees: could not move to Trash: ${targets[*]}"
+                continue
+            fi
+            log "Worktrees: trashed $(format_size_kb "$kb") from $wt"
+            printf '%s\t%s\t%s\n' "$(date +%Y-%m-%d)" "$kb" "$wt" >> "$WORKTREE_HISTORY_FILE"
+        fi
+        DISK_TOTAL_KB=$((DISK_TOTAL_KB + kb))
+        DISK_CLEANED=$((DISK_CLEANED + 1))
+    done < <(list_worktrees)
+
+    if [ "$DRY_RUN" = "1" ]; then
+        return 0
+    fi
+    date +%s > "$WORKTREE_STATE_FILE"
+    log "Worktrees: $DISK_CLEANED cleaned, $(format_size_kb "$DISK_TOTAL_KB") moved to Trash, $skipped kept"
+    if [ "$DISK_TOTAL_KB" -ge $((WORKTREE_NOTIFY_GB * 1048576)) ] && [ "$WORKTREE_NOTIFY_GB" -gt 0 ]; then
+        osascript -e "display notification \"$(format_size_kb "$DISK_TOTAL_KB") of dependencies from $DISK_CLEANED idle worktree(s) moved to the Trash. Empty it to free the space.\" with title \"Agent Reaper\" subtitle \"Disk\"" \
+            >/dev/null 2>&1 || true
+    fi
+}
+
+# True when the scheduled disk scan is due.
+worktree_scan_due() {
+    [ ${#WORKTREE_ROOTS[@]} -gt 0 ] || return 1
+    [ -f "$WORKTREE_STATE_FILE" ] || return 0
+    local last now
+    last=$(cat "$WORKTREE_STATE_FILE" 2>/dev/null)
+    case "$last" in ""|*[!0-9]*) return 0 ;; esac
+    now=$(date +%s)
+    [ $((now - last)) -ge $((WORKTREE_SCAN_HOURS * 3600)) ]
+}
+
+# =============================================================================
 # SUBCOMMANDS
 # =============================================================================
 
@@ -913,6 +1094,9 @@ cmd_run() {
     memory_guard
     process_all_rules
     finish_candidate_scan
+    if worktree_scan_due; then
+        process_worktrees
+    fi
 
     if [ "$KILL_TOTAL" -eq 0 ]; then
         log "Clean run, no zombies found"
@@ -952,6 +1136,42 @@ cmd_preview() {
     else
         echo "${C_BOLD}would reap $DRY_TOTAL process(es)${C_RESET}  ${C_DIM}${quarantine_count} quarantined · ${protected_count} protected${C_RESET}"
     fi
+
+    if [ ${#WORKTREE_ROOTS[@]} -gt 0 ]; then
+        echo ""
+        disk_preview
+    fi
+}
+
+disk_preview() {
+    echo "${C_BLUE}${C_BOLD}worktrees${C_RESET} ${C_DIM}(dry-run, nothing will be moved; idle > ${WORKTREE_IDLE_DAYS}d, dirs: ${WORKTREE_DEPENDENCY_DIRS[*]})${C_RESET}"
+    DRY_RUN=1
+    process_worktrees
+    if [ "$DISK_CLEANED" -eq 0 ]; then
+        echo "${C_GREEN}nothing to clean${C_RESET}"
+    else
+        echo "${C_BOLD}would move $(format_size_kb "$DISK_TOTAL_KB") from $DISK_CLEANED worktree(s) to the Trash${C_RESET}"
+    fi
+}
+
+# reap disk        dry-run of the worktree cleanup
+# reap disk run    clean now, regardless of WORKTREE_SCAN_HOURS
+cmd_disk() {
+    require_nonroot
+    load_config
+    if [ ${#WORKTREE_ROOTS[@]} -eq 0 ]; then
+        echo "disk cleanup is off. Set WORKTREE_ROOTS in $CONFIG_FILE (reap config)."
+        return 0
+    fi
+    case "${1:-preview}" in
+        preview|dry-run) disk_preview ;;
+        run)
+            DRY_RUN=0
+            process_worktrees
+            echo "${C_BOLD}moved $(format_size_kb "$DISK_TOTAL_KB") from $DISK_CLEANED worktree(s) to the Trash${C_RESET}"
+            ;;
+        *) err "usage: reap disk [run]"; return 2 ;;
+    esac
 }
 
 cmd_status() {
@@ -970,6 +1190,11 @@ cmd_status() {
     local a="${#ALWAYS_KILL[@]}" o="${#ORPHAN_ONLY[@]}" s="${#OLD_PROCESS[@]}" h="${#HEAVY_MEMORY[@]}" c="${#HIGH_CPU[@]}" d="${#DEDUPE[@]}" k="${#HOSTS[@]}"
     echo "${C_DIM}  config: $a always · $o orphan · $k hosts (keep ${HOST_CHILDREN_KEEP}) · $s stale (>${OLD_THRESHOLD_HOURS}h) · $h heavy (>${HEAVY_MEMORY_MB}MB) · $c cpu (>${HIGH_CPU_PCT}%) · $d dedupe (keep ${DEDUPE_KEEP})${C_RESET}"
     echo "${C_DIM}  memory: swap $(swap_used_mb)MB used · alert ${SWAP_ALERT_MB}MB · critical ${SWAP_CRITICAL_MB}MB${C_RESET}"
+    if [ ${#WORKTREE_ROOTS[@]} -gt 0 ]; then
+        echo "${C_DIM}  disk:   ${#WORKTREE_ROOTS[@]} worktree root(s) · idle > ${WORKTREE_IDLE_DAYS}d · every ${WORKTREE_SCAN_HOURS}h${C_RESET}"
+    else
+        echo "${C_DIM}  disk:   off (set WORKTREE_ROOTS to clean idle agent worktrees)${C_RESET}"
+    fi
 
     if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
         echo ""
@@ -980,7 +1205,7 @@ cmd_status() {
     fi
 
     echo ""
-    echo "${C_DIM}commands: reap preview · reap top · reap run · reap doctor · reap stats · reap logs · reap config${C_RESET}"
+    echo "${C_DIM}commands: reap preview · reap top · reap run · reap disk · reap doctor · reap stats · reap logs · reap config${C_RESET}"
 }
 
 # cmd_top — list processes that match *any* configured rule, sorted by
@@ -1248,6 +1473,18 @@ cmd_stats() {
         }
     ' "$LOG_FILE"
 
+    if [ -s "$WORKTREE_HISTORY_FILE" ]; then
+        awk -F '\t' -v week="$week_ago" -v month="$month_ago" \
+            -v c_bold="$C_BOLD" -v c_reset="$C_RESET" '
+            { tot += $2; n++; if ($1 >= week) wk += $2; if ($1 >= month) mo += $2 }
+            END {
+                printf "%sdisk:%s   %s%.1f GB%s total  %s%.1f GB%s this week  %s%.1f GB%s this month  (%d worktree cleanups)\n",
+                    c_bold, c_reset, c_bold, tot/1048576, c_reset, c_bold, wk/1048576, c_reset,
+                    c_bold, mo/1048576, c_reset, n
+            }
+        ' "$WORKTREE_HISTORY_FILE"
+    fi
+
     # Top 5 most-reaped patterns, sorted by kill count.
     local top
     top=$(awk '
@@ -1354,6 +1591,7 @@ ${C_BOLD}USAGE${C_RESET}
   reap preview            Dry-run: show what would be killed
   reap top                Candidates sorted by memory (nothing killed)
   reap run                Kill zombies now
+  reap disk [run]         Idle agent worktrees: preview, or move deps to the Trash now
   reap doctor             Full health check (scheduler, app bundle, config, log)
   reap stats              Historical totals (this week, month, top targets)
   reap logs [-f]          Tail the log (-f to follow)
@@ -1382,6 +1620,7 @@ main() {
         run)                 shift; cmd_run "$@" ;;
         preview|dry-run)     shift; cmd_preview "$@" ;;
         top)                 shift; cmd_top "$@" ;;
+        disk|worktrees)      shift; cmd_disk "$@" ;;
         doctor|check)        shift; cmd_doctor "$@" ;;
         logs|log)            shift; cmd_logs "$@" ;;
         stats|history)       shift; cmd_stats "$@" ;;

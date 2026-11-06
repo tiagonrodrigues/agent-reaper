@@ -98,6 +98,7 @@ The installer always:
 | `reap preview` | Dry-run grouped by rule. Explains kill-ready, quarantined, and protected PIDs. Kills nothing. |
 | `reap top` | Kill-ready candidates sorted by RSS; protected and quarantined matches are explained. |
 | `reap run` | Classify matches, advance quarantine state, and terminate kill-ready processes. Also what the LaunchAgent calls. |
+| `reap disk [run]` | Idle agent worktrees: preview what would go to the Trash, or clean now. Off until `WORKTREE_ROOTS` is set. |
 | `reap doctor` | Full health check: scheduler loaded, app bundle intact, config sane, last run recent. |
 | `reap stats` | Historical totals: this week, this month, top targets, busiest day. |
 | `reap logs [-f]` | Show recent log entries. Pass `-f` to follow. |
@@ -210,12 +211,38 @@ HOST_CHILDREN_MIN_AGE_MIN=15
 SWAP_ALERT_MB=8192
 SWAP_CRITICAL_MB=12288
 
+# Opt-in disk cleanup: idle agent worktrees lose their dependency folders
+# (to the Trash) once a day. See "Disk" below.
+WORKTREE_ROOTS=(
+    "$HOME/.t3/worktrees"
+    "$HOME"/code/*/.claude/worktrees
+)
+WORKTREE_IDLE_DAYS=3
+WORKTREE_DEPENDENCY_DIRS=(node_modules .next)
+
 # Require repeated detached observations before termination.
 DETACHED_GRACE_MINUTES=15
 
 # Graceful shutdown window before SIGKILL fallback.
 TERM_GRACE_SEC=3
 ```
+
+## Disk
+
+Agent wrappers (T3 Code, the Codex app, Claude Code under `.claude/worktrees`) create a git worktree per thread or subagent and leave it behind when the thread ends. Each one has its own `node_modules` and build cache. On a Next.js app that is about 1.6 GB per worktree; one machine reached 73 GB.
+
+Set `WORKTREE_ROOTS` and, once a day, the regular sweep moves `node_modules` and `.next` of idle worktrees to the Trash:
+
+```
+$ reap disk
+worktrees (dry-run, nothing will be moved; idle > 3d, dirs: node_modules .next)
+  keep        ~/.t3/worktrees/app/t3-8cb34e5c  uncommitted changes
+  keep        ~/.t3/worktrees/app/t3-e2a9ea4d  git activity in the last 3d
+  trash       ~/.t3/worktrees/app/t3-1f0c9a22  1.6 GB
+would move 1.6 GB from 1 worktree(s) to the Trash
+```
+
+A worktree is only touched when it is a linked worktree (main checkouts are skipped), `git status` is clean, git has seen no activity for `WORKTREE_IDLE_DAYS`, and no process runs inside it. Code, commits and branches stay. Nothing is deleted: the folders go to the Trash, and an install brings them back. `reap disk run` cleans now; `reap stats` shows the total moved.
 
 ## Safety
 
@@ -282,6 +309,7 @@ Run `reap preview`. It kills nothing and prints the classifier's decision for ev
 - [x] v0.8 Default sweep interval lowered 30 min → 10 min, configurable via `REAP_INTERVAL_SEC`
 - [x] v0.9 Live-terminal ownership, interactive-browser protection, detached quarantine, and graceful termination
 - [x] v0.10 `HOSTS` tier for children leaked under live GUI hosts, swap memory guard with notifications
+- [x] v0.11 `reap disk`: opt-in cleanup of dependency folders in idle agent worktrees
 - [ ] GitHub Actions release automation (tag → tap bump)
 - [ ] Linux support via `systemd --user` ([#1](https://github.com/tiagonrodrigues/agent-reaper/issues/1))
 - [ ] Patterns for more agent CLIs (Gemini, Replit Agent, etc.)

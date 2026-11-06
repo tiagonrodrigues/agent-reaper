@@ -142,6 +142,34 @@ SWAP_ALERT_MB=8192
 SWAP_CRITICAL_MB=12288
 
 # =============================================================================
+# WORKTREE_ROOTS: opt-in disk cleanup. Agent wrappers create a git worktree
+# per thread or subagent and never remove it. Each one carries its own
+# node_modules and build cache, about 1.6 GB for a Next.js app; 47 of them
+# filled 73 GB on one machine.
+#
+# Once every WORKTREE_SCAN_HOURS, linked worktrees under these roots get
+# WORKTREE_DEPENDENCY_DIRS moved to the Trash (never deleted), but only when
+# all of these hold:
+#   - it is a linked worktree (.git is a file); main checkouts are skipped
+#   - `git status` is clean (nothing uncommitted, no untracked files)
+#   - no git activity for WORKTREE_IDLE_DAYS (index, HEAD, reflog)
+#   - no process has its working directory or command line inside it
+# Code and commits stay; `bun install` / `npm install` brings the deps back.
+# Preview with `reap disk`, run now with `reap disk run`.
+#
+# Globs work, since this file is sourced by bash.
+# =============================================================================
+WORKTREE_ROOTS=(
+    # "$HOME/.t3/worktrees"                     # T3 Code
+    # "$HOME/.codex/worktrees"                  # Codex app
+    # "$HOME"/code/*/.claude/worktrees          # Claude Code, per repo
+)
+WORKTREE_IDLE_DAYS=3
+WORKTREE_DEPENDENCY_DIRS=(node_modules .next)
+WORKTREE_SCAN_HOURS=24
+WORKTREE_NOTIFY_GB=1        # notify when a scan moves at least this much
+
+# =============================================================================
 # Sweep interval (seconds). Default 600 (10 min). Lower = faster cleanup
 # of leaks, slightly more CPU on the sweep itself (~100 ms × 144 sweeps/day
 # at 600s = ~14 s/day total). Raise to 1800 for 30-min sweeps if you prefer
