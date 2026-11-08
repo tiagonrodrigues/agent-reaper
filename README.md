@@ -12,6 +12,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS-050606.svg)]()
 [![Homebrew](https://img.shields.io/badge/homebrew-tiagonrodrigues%2Ftap-0A4DFF.svg)](https://github.com/tiagonrodrigues/homebrew-tap)
 [![shellcheck](https://github.com/tiagonrodrigues/agent-reaper/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/tiagonrodrigues/agent-reaper/actions/workflows/shellcheck.yml)
+[![skills.sh](https://skills.sh/b/tiagonrodrigues/agent-reaper)](https://skills.sh/tiagonrodrigues/agent-reaper)
 
 A tiny macOS tool that sweeps away abandoned Oh My Pi, `claude`, `cursor-agent`, `codex`, `aider`, Playwright, agent-browser, and MCP-server processes. Runs every 10 minutes in the background (configurable). A match is killable only after it has no live terminal owner and remains detached across repeated scans. Interactive browsers are hard-protected.
 
@@ -83,6 +84,14 @@ The installer always:
 - places the `reap` CLI somewhere on `$PATH` (Homebrew's `bin/`, or `~/.local/bin/` for the other two modes)
 - builds `~/Applications/Agent Reaper.app` (a proper ad-hoc signed macOS bundle, so Login Items and Activity Monitor show **Agent Reaper**, not a nameless `bash`)
 - loads the LaunchAgent, which fires an initial sweep immediately
+
+### As an agent skill
+
+```bash
+npx skills add tiagonrodrigues/agent-reaper
+```
+
+Teaches Claude Code, Codex, Cursor and other agents to diagnose a hot Mac with `reap preview` and clean up with `reap run` instead of `pkill`. The skill does not install `reap` itself; it tells the agent how to, and to ask you first.
 
 ## Status at a glance
 
