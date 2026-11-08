@@ -33,7 +33,7 @@
     <string>12.0</string>
 
     <key>NSHumanReadableCopyright</key>
-    <string>MIT License. https://github.com/tiagonrodrigues/agent-reaper</string>
+    <string>MIT License. https://github.com/Developh/reap</string>
 
     <!-- Background only: no Dock icon, no app switcher entry. -->
     <key>LSBackgroundOnly</key>

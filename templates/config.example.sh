@@ -1,5 +1,5 @@
 #!/bin/bash
-# agent-reaper configuration
+# reap configuration
 # Copy to ~/.config/agent-reaper/config.sh and customize.
 #
 # Three tiers of aggression. Move patterns between arrays to fit your workflow.

@@ -1,6 +1,6 @@
 #!/bin/bash
-# agent-reaper uninstaller
-# https://github.com/tiagonrodrigues/agent-reaper
+# reap uninstaller
+# https://github.com/Developh/reap
 #
 # Removes the LaunchAgent, the Agent Reaper.app bundle, and the `reap` CLI.
 # Preserves config and logs by default. Pass --purge to also remove those.
@@ -15,7 +15,7 @@ readonly APP_DIR="$HOME/Applications/Agent Reaper.app"
 readonly CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-reaper"
 readonly LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/share}/agent-reaper"
 
-echo "Uninstalling agent-reaper..."
+echo "Uninstalling reap..."
 
 # Unload & remove the LaunchAgent
 if [ -f "$PLIST_PATH" ]; then

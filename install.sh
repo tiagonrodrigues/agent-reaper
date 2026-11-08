@@ -1,6 +1,6 @@
 #!/bin/bash
-# agent-reaper installer
-# https://github.com/tiagonrodrigues/agent-reaper
+# reap installer
+# https://github.com/Developh/reap
 #
 # Sets up the Agent Reaper.app bundle at ~/Applications, writes the
 # LaunchAgent, and seeds the config. Works in three modes:
@@ -14,8 +14,8 @@
 
 set -euo pipefail
 
-readonly REPO_RAW="https://raw.githubusercontent.com/tiagonrodrigues/agent-reaper/main"
-readonly VERSION="0.9.0"
+readonly REPO_RAW="https://raw.githubusercontent.com/Developh/reap/main"
+readonly VERSION="0.12.0"
 # Default sweep interval (seconds). Can be overridden by REAP_INTERVAL_SEC
 # in the user's config or via the environment.
 readonly DEFAULT_INTERVAL_SEC="600"
@@ -35,7 +35,7 @@ readonly APP_EXEC_PATH="$APP_MACOS_DIR/AgentReaper"
 
 # --- Platform guard ---------------------------------------------------------
 if [ "$(uname)" != "Darwin" ]; then
-    echo "agent-reaper is macOS-only (uses launchd)." >&2
+    echo "reap is macOS-only (uses launchd)." >&2
     exit 1
 fi
 
@@ -44,7 +44,7 @@ if [ "$(id -u)" = "0" ]; then
     exit 1
 fi
 
-echo "Installing agent-reaper v$VERSION..."
+echo "Installing reap v$VERSION..."
 
 # --- Migrate from pre-0.2 installs -----------------------------------------
 if [ -f "$HOME/.local/bin/agent-reaper.sh" ]; then
@@ -173,7 +173,7 @@ echo "  LaunchAgent loaded"
 # --- Sanity check -----------------------------------------------------------
 if launchctl list | grep -q "$LABEL"; then
     echo ""
-    echo "agent-reaper is live. First sweep runs now, next in $((INTERVAL_SEC / 60)) minutes."
+    echo "reap is live. First sweep runs now, next in $((INTERVAL_SEC / 60)) minutes."
     echo ""
     if [ "$MODE" != "provided" ]; then
         case ":$PATH:" in

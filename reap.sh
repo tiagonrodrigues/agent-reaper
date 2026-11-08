@@ -1,6 +1,6 @@
 #!/bin/bash
 # reap: kill zombie processes left behind by AI-agent wrappers.
-# https://github.com/tiagonrodrigues/agent-reaper
+# https://github.com/Developh/reap
 #
 # Usage:
 #   reap                    Show status (last run, schedule, recent kills)
@@ -20,7 +20,7 @@ set -u
 # =============================================================================
 # CONSTANTS
 # =============================================================================
-readonly REAP_VERSION="0.11.0"
+readonly REAP_VERSION="0.12.0"
 readonly REAP_LABEL="co.tiagor.agent-reaper"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-reaper"
@@ -1548,12 +1548,12 @@ cmd_config() {
 # Find a bundled script (install.sh / uninstall.sh) without curling.
 # Search order:
 #   1. Next to reap itself                (git clone layout).
-#   2. $here/../share/agent-reaper/       (Homebrew pkgshare layout).
+#   2. $here/../share/reap/ or ../share/agent-reaper/ (Homebrew pkgshare, new and pre-0.12 formula name).
 # Prints the resolved path on stdout if found, returns non-zero otherwise.
 find_bundled_script() {
     local name="$1" here candidate
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    for candidate in "$here/$name" "$here/../share/agent-reaper/$name"; do
+    for candidate in "$here/$name" "$here/../share/reap/$name" "$here/../share/agent-reaper/$name"; do
         if [ -f "$candidate" ]; then
             # Normalize so "$here/../share/..." becomes an absolute path.
             ( cd "$(dirname "$candidate")" && printf '%s/%s\n' "$(pwd)" "$name" )
@@ -1569,7 +1569,7 @@ cmd_install() {
     if installer="$(find_bundled_script install.sh)"; then
         exec bash "$installer" "$@"
     fi
-    exec bash -c "curl -fsSL https://raw.githubusercontent.com/tiagonrodrigues/agent-reaper/main/install.sh | bash"
+    exec bash -c "curl -fsSL https://raw.githubusercontent.com/Developh/reap/main/install.sh | bash"
 }
 
 cmd_uninstall() {
@@ -1579,7 +1579,7 @@ cmd_uninstall() {
         exec bash "$uninstaller" "$@"
     fi
     local arg="${1:-}"
-    exec bash -c "curl -fsSL https://raw.githubusercontent.com/tiagonrodrigues/agent-reaper/main/uninstall.sh | bash -s -- $arg"
+    exec bash -c "curl -fsSL https://raw.githubusercontent.com/Developh/reap/main/uninstall.sh | bash -s -- $arg"
 }
 
 show_help() {
@@ -1608,7 +1608,7 @@ ${C_BOLD}FILES${C_RESET}
   ${C_DIM}$LOG_FILE${C_RESET}
 
 ${C_BOLD}MORE${C_RESET}
-  https://github.com/tiagonrodrigues/agent-reaper
+  https://github.com/Developh/reap
 EOF
 }
 

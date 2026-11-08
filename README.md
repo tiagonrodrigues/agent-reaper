@@ -4,19 +4,17 @@
   </a>
 </p>
 
-# agent-reaper 🪦
+# reap 🪦
 
 > Kill the zombie processes your AI coding agents leave behind.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-0A4DFF.svg)](./LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS-050606.svg)]()
-[![Homebrew](https://img.shields.io/badge/homebrew-tiagonrodrigues%2Ftap-0A4DFF.svg)](https://github.com/tiagonrodrigues/homebrew-tap)
-[![shellcheck](https://github.com/tiagonrodrigues/agent-reaper/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/tiagonrodrigues/agent-reaper/actions/workflows/shellcheck.yml)
-[![skills.sh](https://skills.sh/b/tiagonrodrigues/agent-reaper)](https://skills.sh/tiagonrodrigues/agent-reaper)
+[![Homebrew](https://img.shields.io/badge/homebrew-developh%2Ftap-0A4DFF.svg)](https://github.com/Developh/homebrew-tap)
+[![shellcheck](https://github.com/Developh/reap/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/Developh/reap/actions/workflows/shellcheck.yml)
+[![skills.sh](https://skills.sh/b/developh/reap)](https://skills.sh/developh/reap)
 
 A tiny macOS tool that sweeps away abandoned Oh My Pi, `claude`, `cursor-agent`, `codex`, `aider`, Playwright, agent-browser, and MCP-server processes. Runs every 10 minutes in the background (configurable). A match is killable only after it has no live terminal owner and remains detached across repeated scans. Interactive browsers are hard-protected.
-
-> The repo is `agent-reaper`. The CLI you actually type is `reap`. Think of it like `homebrew` the project vs `brew` the command.
 
 <p align="center">
   <img src="./assets/screenshots/reap-preview.png" alt="reap preview" width="100%">
@@ -60,7 +58,7 @@ Termination uses `SIGTERM`, waits `TERM_GRACE_SEC`, and escalates only surviving
 ### Homebrew (recommended)
 
 ```bash
-brew install tiagonrodrigues/tap/agent-reaper
+brew install developh/tap/reap
 reap install
 ```
 
@@ -69,14 +67,14 @@ reap install
 ### curl
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tiagonrodrigues/agent-reaper/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Developh/reap/main/install.sh | bash
 ```
 
 ### From source
 
 ```bash
-git clone https://github.com/tiagonrodrigues/agent-reaper.git
-cd agent-reaper
+git clone https://github.com/Developh/reap.git
+cd reap
 ./install.sh
 ```
 
@@ -88,7 +86,7 @@ The installer always:
 ### As an agent skill
 
 ```bash
-npx skills add tiagonrodrigues/agent-reaper
+npx skills add developh/reap
 ```
 
 Teaches Claude Code, Codex, Cursor and other agents to diagnose a hot Mac with `reap preview` and clean up with `reap run` instead of `pkill`. The skill does not install `reap` itself; it tells the agent how to, and to ask you first.
@@ -302,7 +300,7 @@ Detached MCP patterns can be caught by the stale and dedupe tiers. Active MCPs i
 Live terminal ownership and the hard blocklists still protect it. Remove the pattern if you do not want detached copies cleaned.
 
 **Does this work on Linux?**
-Not yet. The scheduler and process inspection are currently macOS-specific. Linux support via `systemd --user` is tracked in [issue #1](https://github.com/tiagonrodrigues/agent-reaper/issues/1).
+Not yet. The scheduler and process inspection are currently macOS-specific. Linux support via `systemd --user` is tracked in [issue #1](https://github.com/Developh/reap/issues/1).
 
 **Is this safe? I'm paranoid.**
 Run `reap preview`. It kills nothing and prints the classifier's decision for every matching PID.
@@ -311,7 +309,7 @@ Run `reap preview`. It kills nothing and prints the classifier's decision for ev
 
 - [x] v0.3 `.app` bundle for macOS identity (Login Items show *Agent Reaper*)
 - [x] v0.4 `reap stats`, MCP server patterns, Playwright coverage
-- [x] v0.4.1 Homebrew tap: `brew install tiagonrodrigues/tap/agent-reaper`
+- [x] v0.4.1 Homebrew tap: `brew install developh/tap/reap`
 - [x] v0.5 `HEAVY_MEMORY` tier, `reap top`, `reap doctor`
 - [x] v0.6 `HIGH_CPU` tier (sustained-CPU detection for background runaways)
 - [x] v0.7 `DEDUPE` tier (kill duplicate MCP clones from closed agent sessions)
@@ -319,8 +317,9 @@ Run `reap preview`. It kills nothing and prints the classifier's decision for ev
 - [x] v0.9 Live-terminal ownership, interactive-browser protection, detached quarantine, and graceful termination
 - [x] v0.10 `HOSTS` tier for children leaked under live GUI hosts, swap memory guard with notifications
 - [x] v0.11 `reap disk`: opt-in cleanup of dependency folders in idle agent worktrees
+- [x] v0.12 Moved to [Developh/reap](https://github.com/Developh/reap), formula renamed to `reap`, agent skill (`npx skills add developh/reap`)
 - [ ] GitHub Actions release automation (tag → tap bump)
-- [ ] Linux support via `systemd --user` ([#1](https://github.com/tiagonrodrigues/agent-reaper/issues/1))
+- [ ] Linux support via `systemd --user` ([#1](https://github.com/Developh/reap/issues/1))
 - [ ] Patterns for more agent CLIs (Gemini, Replit Agent, etc.)
 
 ## Contributing
@@ -333,7 +332,7 @@ MIT. See [LICENSE](./LICENSE).
 
 ## Credits
 
-Built by [Tiago Rodrigues](https://twitter.com/tiagoatdeveloph) ([@tiagoatdeveloph](https://twitter.com/tiagoatdeveloph)) out of frustration, after watching his Mac's fan try to achieve liftoff.
+Built by [Tiago Rodrigues](https://github.com/tiagonrodrigues) ([@tiagoatdeveloph](https://twitter.com/tiagoatdeveloph)), co-founder of [Developh](https://developh.co), a design and development studio in Lisbon, out of frustration, after watching his Mac's fan try to achieve liftoff.
 
 ---
 

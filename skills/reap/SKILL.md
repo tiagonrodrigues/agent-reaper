@@ -1,9 +1,9 @@
 ---
-name: agent-reaper
+name: reap
 description: "Find and clean the zombie processes AI coding agents leave behind on macOS (orphaned claude, codex, cursor-agent, aider and opencode CLIs, detached MCP servers, Playwright and agent-browser Chromiums) and the node_modules of idle agent worktrees, with the reap CLI. Load when the Mac runs hot or slow, load average or swap is high, there are many leftover agent or MCP processes, a disk is filling up with git worktrees, or before killing agent processes by hand."
 ---
 
-# agent-reaper
+# reap
 
 `reap` is a macOS CLI and LaunchAgent that terminates processes AI-agent wrappers leave behind. It decides by
 ownership, not by CPU or memory: a process is only killed when no live terminal or agent host owns it and it has
@@ -20,10 +20,10 @@ If it is missing, tell the person and offer to install it. Installing schedules 
 10 minutes, so ask first:
 
 ```bash
-brew install tiagonrodrigues/tap/agent-reaper && reap install
+brew install developh/tap/reap && reap install
 ```
 
-Without Homebrew: `curl -fsSL https://raw.githubusercontent.com/tiagonrodrigues/agent-reaper/main/install.sh | bash`.
+Without Homebrew: `curl -fsSL https://raw.githubusercontent.com/Developh/reap/main/install.sh | bash`.
 
 ## Diagnose before acting
 
@@ -72,5 +72,5 @@ When editing it:
 - Do not delete worktrees or their folders yourself: `reap disk run` moves only dependency folders, to the Trash.
 - Linux is not supported yet. On Linux, say so instead of improvising.
 
-Source and full docs: https://github.com/tiagonrodrigues/agent-reaper
-Made by Developh (https://developh.co), a design and development studio in Lisbon.
+Source and full docs: https://github.com/Developh/reap
+Made by Tiago Rodrigues at Developh (https://developh.co), a design and development studio in Lisbon.
