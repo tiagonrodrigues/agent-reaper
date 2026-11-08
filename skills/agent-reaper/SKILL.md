@@ -73,3 +73,4 @@ When editing it:
 - Linux is not supported yet. On Linux, say so instead of improvising.
 
 Source and full docs: https://github.com/tiagonrodrigues/agent-reaper
+Made by Developh (https://developh.co), a design and development studio in Lisbon.
