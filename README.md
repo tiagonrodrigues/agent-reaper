@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://developh.co">
+  <a href="https://www.developh.co">
     <img src="./assets/hero.png" alt="reap · by Developh" width="100%">
   </a>
 </p>
@@ -332,14 +332,14 @@ MIT. See [LICENSE](./LICENSE).
 
 ## Credits
 
-Built by [Tiago Rodrigues](https://github.com/tiagonrodrigues) ([@tiagoatdeveloph](https://twitter.com/tiagoatdeveloph)), co-founder of [Developh](https://developh.co), a design and development studio in Lisbon, out of frustration, after watching his Mac's fan try to achieve liftoff.
+Built by [Tiago Rodrigues](https://github.com/tiagonrodrigues) ([@tiagoatdeveloph](https://twitter.com/tiagoatdeveloph)), co-founder of [Developh](https://www.developh.co), a design and development studio in Lisbon, out of frustration, after watching his Mac's fan try to achieve liftoff.
 
 ---
 
 <p align="center">
-  <a href="https://developh.co">
+  <a href="https://www.developh.co">
     <img src="./assets/brand/developh-icon.svg" alt="Developh" width="40" height="40">
   </a>
   <br>
-  <sub>A <a href="https://developh.co">Developh</a> project. Built different.</sub>
+  <sub>A <a href="https://www.developh.co">Developh</a> project. Built different.</sub>
 </p>

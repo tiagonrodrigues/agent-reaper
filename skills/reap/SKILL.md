@@ -73,4 +73,4 @@ When editing it:
 - Linux is not supported yet. On Linux, say so instead of improvising.
 
 Source and full docs: https://github.com/Developh/reap
-Made by Tiago Rodrigues at Developh (https://developh.co), a design and development studio in Lisbon.
+Made by Tiago Rodrigues at Developh (https://www.developh.co), a design and development studio in Lisbon.
